@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import timedelta
 from enum import StrEnum
 from uuid import UUID
 
@@ -302,9 +301,7 @@ class RoomManager:
         if not state.is_owner(user_id):
             return OpResult.NOT_OWNER
         async with state.lock:
-            state.phase = Phase.WORK
             state.reset_current_phase()
-            state.paused_accumulated = timedelta()
             async with async_session() as db:
                 await svc.record_event(db, room_id=room_id, event_type="reset")
             await self._render(state)
@@ -329,8 +326,9 @@ class RoomManager:
         """Remove ``user_id`` from every in-memory room except ``except_room_id``.
 
         ``svc.join_room`` already closes stale DB participations when a user
-        switches rooms; this call keeps the in-memory state consistent. Called
-        from ``join`` *before* the target room's lock is acquired so that two
+        switches rooms; this call mirrors a real leave operation so ownership
+        transfer, auto-end, and lifecycle events stay consistent. Called from
+        ``join`` *before* the target room's lock is acquired so that two
         concurrent swaps in opposite directions cannot cycle on room locks.
         """
         targets = [
@@ -339,10 +337,9 @@ class RoomManager:
             if r.room_id != except_room_id and user_id in r.participants
         ]
         for other in targets:
-            async with other.lock:
-                if user_id in other.participants:  # re-check under lock
-                    other.remove_participant(user_id)
-                    await self._render(other)
+            # Route through leave() so DB + events + owner logic all stay
+            # aligned with explicit "退出" button behaviour.
+            await self.leave(other.room_id, user_id)
 
     async def _run_loop(
         self, state: RoomState, channel: discord.abc.Messageable

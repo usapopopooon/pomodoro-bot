@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -165,6 +166,42 @@ async def test_join_switches_user_across_rooms() -> None:
 
 
 @pytest.mark.asyncio
+async def test_join_switch_auto_ends_previous_room_when_it_becomes_empty() -> None:
+    manager = _manager()
+    r1, _ = await _spawn_room(manager, creator=1, channel_id=11)
+    r2, _ = await _spawn_room(manager, creator=2, channel_id=22)
+    await manager.join(r1.room_id, 9)
+    try:
+        assert await manager.join(r2.room_id, 9) is OpResult.OK
+        assert manager.get(r1.room_id) is None
+        async with async_session() as db:
+            old_room = await db.get(PomodoroRoom, r1.room_id)
+            assert old_room is not None
+            assert old_room.ended_reason == "auto_empty"
+    finally:
+        await manager.end(r2.room_id, reason="test")
+
+
+@pytest.mark.asyncio
+async def test_join_switch_owner_transfers_ownership_in_previous_room() -> None:
+    manager = _manager()
+    r1, _ = await _spawn_room(manager, creator=1, channel_id=31)
+    r2, _ = await _spawn_room(manager, creator=9, channel_id=32)
+    await manager.join(r1.room_id, 1)
+    await manager.join(r1.room_id, 2)
+    try:
+        assert await manager.join(r2.room_id, 1) is OpResult.OK
+        assert r1.created_by == 2
+        async with async_session() as db:
+            old_room = await db.get(PomodoroRoom, r1.room_id)
+            assert old_room is not None
+            assert old_room.created_by == 2
+    finally:
+        await manager.end(r1.room_id, reason="test")
+        await manager.end(r2.room_id, reason="test")
+
+
+@pytest.mark.asyncio
 async def test_leave_non_participant_returns_not_a_participant() -> None:
     manager = _manager()
     state, _ = await _spawn_room(manager, creator=1)
@@ -265,6 +302,26 @@ async def test_skip_owner_advances_without_counting_completion() -> None:
         async with async_session() as db:
             pomos = (await db.execute(select(Pomodoro))).scalars().all()
             assert pomos == []
+    finally:
+        await manager.end(state.room_id, reason="test")
+
+
+@pytest.mark.asyncio
+async def test_reset_owner_keeps_current_phase_and_rewinds_timer() -> None:
+    manager = _manager()
+    state, _ = await _spawn_room(manager, creator=1)
+    await manager.join(state.room_id, 1)
+    try:
+        assert await manager.skip(state.room_id, 1) is OpResult.OK
+        assert state.phase is Phase.SHORT_BREAK
+
+        before = datetime.now(UTC) - timedelta(seconds=1)
+        state.phase_started_at = before
+        assert await manager.reset(state.room_id, 1) is OpResult.OK
+
+        assert state.phase is Phase.SHORT_BREAK
+        assert state.phase_started_at > before
+        assert not state.is_paused
     finally:
         await manager.end(state.room_id, reason="test")
 
