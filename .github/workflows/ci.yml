@@ -14,8 +14,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  backend-lint:
-    name: Backend lint
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,7 +27,7 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
-      - name: Install backend deps
+      - name: Install deps
         run: pip install -e ".[dev]" yamllint
 
       - name: ruff format --check
@@ -42,8 +42,8 @@ jobs:
       - name: yamllint
         run: yamllint -s .
 
-  backend-test:
-    name: Backend test
+  test:
+    name: Test
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -74,7 +74,7 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
-      - name: Install backend deps
+      - name: Install deps
         run: pip install -e ".[dev]"
 
       - name: Run migrations

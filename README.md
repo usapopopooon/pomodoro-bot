@@ -190,8 +190,8 @@ DATABASE_URL='postgresql+asyncpg://pomodoro:pomodoro@localhost:5432/pomodoro_tes
 
 [.github/workflows/ci.yml](.github/workflows/ci.yml) は 2 ジョブ:
 
-- **backend-lint** — ruff format / ruff check / mypy / yamllint
-- **backend-test** — `postgres:17-alpine` サービスコンテナを立てて `alembic upgrade head` → pytest + coverage
+- **lint** — ruff format / ruff check / mypy / yamllint
+- **test** — `postgres:17-alpine` サービスコンテナを立てて `alembic upgrade head` → pytest + coverage
 
 ## 拡張ポイント
 
