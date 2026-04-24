@@ -5,6 +5,7 @@ from uuid import UUID
 
 import discord
 
+from src.core.phase import PhasePlan
 from src.ui.embeds import stats_embed
 
 if TYPE_CHECKING:
@@ -80,6 +81,90 @@ class TaskModal(discord.ui.Modal):
         if result is OpResult.OK:
             label = task or "(未設定)"
             await _ephemeral(interaction, f"タスクを更新しました: **{label}**")
+        else:
+            await _ephemeral(
+                interaction, REJECT_MESSAGES.get(result, "操作に失敗しました。")
+            )
+
+
+class CycleSettingsModal(discord.ui.Modal):
+    def __init__(self, manager: RoomManager, room_id: UUID, plan: PhasePlan) -> None:
+        super().__init__(title="時間設定を編集", timeout=300)
+        self._manager = manager
+        self._room_id = room_id
+        self.work_input: discord.ui.TextInput[CycleSettingsModal] = (
+            discord.ui.TextInput(
+                label="作業時間(分: 1-180)",
+                required=True,
+                max_length=3,
+                default=str(plan.work_seconds // 60),
+            )
+        )
+        self.short_break_input: discord.ui.TextInput[CycleSettingsModal] = (
+            discord.ui.TextInput(
+                label="短休憩(分: 1-60)",
+                required=True,
+                max_length=2,
+                default=str(plan.short_break_seconds // 60),
+            )
+        )
+        self.long_break_input: discord.ui.TextInput[CycleSettingsModal] = (
+            discord.ui.TextInput(
+                label="長休憩(分: 1-120)",
+                required=True,
+                max_length=3,
+                default=str(plan.long_break_seconds // 60),
+            )
+        )
+        self.long_every_input: discord.ui.TextInput[CycleSettingsModal] = (
+            discord.ui.TextInput(
+                label="長休憩の頻度(1-12)",
+                required=True,
+                max_length=2,
+                default=str(plan.long_break_every),
+            )
+        )
+        self.add_item(self.work_input)
+        self.add_item(self.short_break_input)
+        self.add_item(self.long_break_input)
+        self.add_item(self.long_every_input)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        try:
+            work_minutes = int(self.work_input.value.strip())
+            short_break_minutes = int(self.short_break_input.value.strip())
+            long_break_minutes = int(self.long_break_input.value.strip())
+            long_break_every = int(self.long_every_input.value.strip())
+        except ValueError:
+            await _ephemeral(interaction, "数字で入力してください。")
+            return
+
+        if not (1 <= work_minutes <= 180):
+            await _ephemeral(interaction, "作業時間は 1〜180 分で指定してください。")
+            return
+        if not (1 <= short_break_minutes <= 60):
+            await _ephemeral(interaction, "短休憩は 1〜60 分で指定してください。")
+            return
+        if not (1 <= long_break_minutes <= 120):
+            await _ephemeral(interaction, "長休憩は 1〜120 分で指定してください。")
+            return
+        if not (1 <= long_break_every <= 12):
+            await _ephemeral(interaction, "長休憩の頻度は 1〜12 で指定してください。")
+            return
+
+        plan = PhasePlan(
+            work_seconds=work_minutes * 60,
+            short_break_seconds=short_break_minutes * 60,
+            long_break_seconds=long_break_minutes * 60,
+            long_break_every=long_break_every,
+        )
+        result = await self._manager.update_plan(
+            self._room_id,
+            interaction.user.id,
+            plan=plan,
+        )
+        if result is OpResult.OK:
+            await _ephemeral(interaction, "時間設定を更新し、現在フェーズをリセットしました。")
         else:
             await _ephemeral(
                 interaction, REJECT_MESSAGES.get(result, "操作に失敗しました。")
@@ -248,3 +333,26 @@ class RoomPanelView(discord.ui.View):
         await interaction.response.defer(ephemeral=True, thinking=False)
         result = await self._manager.end_by_owner(self._room_id, interaction.user.id)
         await _reply(interaction, result, ok_text="ポモドーロを終了しました。")
+
+    @discord.ui.button(
+        label="時間設定",
+        emoji="⚙️",
+        style=discord.ButtonStyle.secondary,
+        custom_id="pomo:cycle",
+        row=1,
+    )
+    async def cycle_button(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button[RoomPanelView],
+    ) -> None:
+        state = self._manager.get(self._room_id)
+        if state is None:
+            await _ephemeral(interaction, REJECT_MESSAGES[OpResult.ROOM_NOT_FOUND])
+            return
+        if not state.is_owner(interaction.user.id):
+            await _ephemeral(interaction, REJECT_MESSAGES[OpResult.NOT_OWNER])
+            return
+        await interaction.response.send_modal(
+            CycleSettingsModal(self._manager, self._room_id, state.plan)
+        )

@@ -87,6 +87,25 @@ async def update_owner(session: AsyncSession, room_id: UUID, new_owner_id: int) 
     await session.commit()
 
 
+async def update_room_plan(
+    session: AsyncSession,
+    room_id: UUID,
+    *,
+    work_seconds: int,
+    short_break_seconds: int,
+    long_break_seconds: int,
+    long_break_every: int,
+) -> None:
+    row = await session.get(PomodoroRoom, room_id)
+    if row is None:
+        return
+    row.work_seconds = work_seconds
+    row.short_break_seconds = short_break_seconds
+    row.long_break_seconds = long_break_seconds
+    row.long_break_every = long_break_every
+    await session.commit()
+
+
 async def end_room(
     session: AsyncSession,
     room_id: UUID,

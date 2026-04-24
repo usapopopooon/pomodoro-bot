@@ -254,6 +254,44 @@ class RoomManager:
             await self._render(state)
             return OpResult.OK
 
+    async def update_plan(
+        self,
+        room_id: UUID,
+        user_id: int,
+        *,
+        plan: PhasePlan,
+    ) -> OpResult:
+        state = self._rooms.get(room_id)
+        if state is None:
+            return OpResult.ROOM_NOT_FOUND
+        if not state.is_owner(user_id):
+            return OpResult.NOT_OWNER
+        async with state.lock:
+            state.plan = plan
+            state.reset_current_phase()
+            async with async_session() as db:
+                await svc.update_room_plan(
+                    db,
+                    room_id,
+                    work_seconds=plan.work_seconds,
+                    short_break_seconds=plan.short_break_seconds,
+                    long_break_seconds=plan.long_break_seconds,
+                    long_break_every=plan.long_break_every,
+                )
+                await svc.record_event(
+                    db,
+                    room_id=room_id,
+                    event_type="plan_updated",
+                    payload={
+                        "work_seconds": plan.work_seconds,
+                        "short_break_seconds": plan.short_break_seconds,
+                        "long_break_seconds": plan.long_break_seconds,
+                        "long_break_every": plan.long_break_every,
+                    },
+                )
+            await self._render(state)
+            return OpResult.OK
+
     # ------------------------------------------------------------------
     # Owner-only ops
     # ------------------------------------------------------------------

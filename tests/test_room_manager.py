@@ -327,6 +327,49 @@ async def test_reset_owner_keeps_current_phase_and_rewinds_timer() -> None:
 
 
 @pytest.mark.asyncio
+async def test_update_plan_owner_updates_room_cycle() -> None:
+    manager = _manager()
+    state, _ = await _spawn_room(manager, creator=1)
+    await manager.join(state.room_id, 1)
+    try:
+        before = datetime.now(UTC) - timedelta(seconds=1)
+        state.phase_started_at = before
+        plan = PhasePlan(
+            work_seconds=30 * 60,
+            short_break_seconds=7 * 60,
+            long_break_seconds=20 * 60,
+            long_break_every=3,
+        )
+        assert await manager.update_plan(state.room_id, 1, plan=plan) is OpResult.OK
+        assert state.plan == plan
+        assert state.phase_started_at > before
+
+        async with async_session() as db:
+            room = await db.get(PomodoroRoom, state.room_id)
+            assert room is not None
+            assert room.work_seconds == 30 * 60
+            assert room.short_break_seconds == 7 * 60
+            assert room.long_break_seconds == 20 * 60
+            assert room.long_break_every == 3
+    finally:
+        await manager.end(state.room_id, reason="test")
+
+
+@pytest.mark.asyncio
+async def test_update_plan_rejected_for_non_owner() -> None:
+    manager = _manager()
+    state, _ = await _spawn_room(manager, creator=1)
+    await manager.join(state.room_id, 2)
+    try:
+        plan = PhasePlan(20 * 60, 5 * 60, 10 * 60, 4)
+        assert (
+            await manager.update_plan(state.room_id, 2, plan=plan) is OpResult.NOT_OWNER
+        )
+    finally:
+        await manager.end(state.room_id, reason="test")
+
+
+@pytest.mark.asyncio
 async def test_end_by_owner_only_accepts_owner() -> None:
     manager = _manager()
     state, _ = await _spawn_room(manager, creator=1)

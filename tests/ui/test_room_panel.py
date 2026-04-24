@@ -6,7 +6,8 @@ from uuid import uuid4
 import discord
 import pytest
 
-from src.ui.room_panel import RoomPanelView, TaskModal
+from src.core.phase import PhasePlan
+from src.ui.room_panel import CycleSettingsModal, RoomPanelView, TaskModal
 
 
 def _manager_stub() -> MagicMock:
@@ -57,5 +58,21 @@ async def test_room_panel_view_custom_ids_are_room_specific() -> None:
     assert ids_v1.isdisjoint(ids_v2)
     assert all(cid.endswith(str(r1)) for cid in ids_v1 if cid)
     assert all(cid.endswith(str(r2)) for cid in ids_v2 if cid)
-    assert len(ids_v1) == 8
-    assert len(ids_v2) == 8
+    assert len(ids_v1) == 9
+    assert len(ids_v2) == 9
+
+
+@pytest.mark.asyncio
+async def test_cycle_settings_modal_uses_plan_defaults() -> None:
+    plan = PhasePlan(
+        work_seconds=25 * 60,
+        short_break_seconds=5 * 60,
+        long_break_seconds=15 * 60,
+        long_break_every=4,
+    )
+    modal = CycleSettingsModal(_manager_stub(), uuid4(), plan)
+
+    assert modal.work_input.default == "25"
+    assert modal.short_break_input.default == "5"
+    assert modal.long_break_input.default == "15"
+    assert modal.long_every_input.default == "4"

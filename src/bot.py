@@ -4,7 +4,6 @@ import asyncio
 import logging
 
 import discord
-from discord import app_commands
 from discord.ext import commands
 from sqlalchemy.exc import IntegrityError
 
@@ -38,38 +37,6 @@ def _build_default_plan() -> PhasePlan:
     )
 
 
-def _build_plan_for_command(
-    *,
-    default_plan: PhasePlan,
-    work_minutes: int | None,
-    short_break_minutes: int | None,
-    long_break_minutes: int | None,
-    long_break_every: int | None,
-) -> PhasePlan:
-    return PhasePlan(
-        work_seconds=(
-            work_minutes * 60
-            if work_minutes is not None
-            else default_plan.work_seconds
-        ),
-        short_break_seconds=(
-            short_break_minutes * 60
-            if short_break_minutes is not None
-            else default_plan.short_break_seconds
-        ),
-        long_break_seconds=(
-            long_break_minutes * 60
-            if long_break_minutes is not None
-            else default_plan.long_break_seconds
-        ),
-        long_break_every=(
-            long_break_every
-            if long_break_every is not None
-            else default_plan.long_break_every
-        ),
-    )
-
-
 class PomodoroBot(commands.Bot):
     """Single-command Discord bot.
 
@@ -100,7 +67,7 @@ class PomodoroBot(commands.Bot):
         orphans = await self._reconcile_orphaned_rooms()
 
         self.tree.add_command(
-            app_commands.Command(
+            discord.app_commands.Command(
                 name="pomo",
                 description=(
                     "このチャンネルにポモドーロのコントロールパネルを出します"
@@ -142,20 +109,7 @@ class PomodoroBot(commands.Bot):
     # /pomo — the only slash command
     # ------------------------------------------------------------------
 
-    @app_commands.describe(
-        work_minutes="作業時間(分) 例: 25",
-        short_break_minutes="短休憩時間(分) 例: 5",
-        long_break_minutes="長休憩時間(分) 例: 15",
-        long_break_every="何回ごとに長休憩にするか 例: 4",
-    )
-    async def _cmd_pomo(
-        self,
-        interaction: discord.Interaction,
-        work_minutes: app_commands.Range[int, 1, 180] | None = None,
-        short_break_minutes: app_commands.Range[int, 1, 60] | None = None,
-        long_break_minutes: app_commands.Range[int, 1, 120] | None = None,
-        long_break_every: app_commands.Range[int, 1, 12] | None = None,
-    ) -> None:
+    async def _cmd_pomo(self, interaction: discord.Interaction) -> None:
         channel = interaction.channel
         # ``interaction.channel`` can be a ``CategoryChannel`` etc. which
         # isn't messageable; reject anything we can't post into.
@@ -174,14 +128,6 @@ class PomodoroBot(commands.Bot):
             return
 
         await interaction.response.defer(thinking=True)
-        plan = _build_plan_for_command(
-            default_plan=self.room_manager.default_plan,
-            work_minutes=work_minutes,
-            short_break_minutes=short_break_minutes,
-            long_break_minutes=long_break_minutes,
-            long_break_every=long_break_every,
-        )
-
         # The pre-check above is best-effort: two users firing ``/pomo``
         # simultaneously can both pass it, and the second ``create_room``
         # hits the partial-unique index on ``channel_id``. Catch that as a
@@ -192,7 +138,6 @@ class PomodoroBot(commands.Bot):
                 channel_id=channel.id,
                 created_by=interaction.user.id,
                 channel=channel,
-                plan=plan,
             )
         except IntegrityError:
             logger.info("concurrent panel creation lost race channel=%s", channel.id)
