@@ -18,8 +18,7 @@ from src.ui.room_panel import RoomPanelView
 logger = logging.getLogger(__name__)
 
 ORPHAN_PANEL_NOTICE = (
-    "🍅 このポモドーロは Bot の再起動で終了しました。"
-    "`/pomo` で作り直してください。"
+    "🍅 このポモドーロは Bot の再起動で終了しました。`/pomo` で作り直してください。"
 )
 
 ROOM_ALREADY_ACTIVE_MESSAGE = (

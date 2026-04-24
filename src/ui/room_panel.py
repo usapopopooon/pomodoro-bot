@@ -129,34 +129,49 @@ class CycleSettingsModal(discord.ui.Modal):
         self.add_item(self.long_break_input)
         self.add_item(self.long_every_input)
 
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        try:
-            work_minutes = int(self.work_input.value.strip())
-            short_break_minutes = int(self.short_break_input.value.strip())
-            long_break_minutes = int(self.long_break_input.value.strip())
-            long_break_every = int(self.long_every_input.value.strip())
-        except ValueError:
-            await _ephemeral(interaction, "数字で入力してください。")
-            return
+    _FIELDS: tuple[tuple[str, str, int, int], ...] = (
+        ("work", "作業時間", 1, 180),
+        ("short_break", "短休憩", 1, 60),
+        ("long_break", "長休憩", 1, 120),
+        ("long_every", "長休憩の頻度", 1, 12),
+    )
 
-        if not (1 <= work_minutes <= 180):
-            await _ephemeral(interaction, "作業時間は 1〜180 分で指定してください。")
-            return
-        if not (1 <= short_break_minutes <= 60):
-            await _ephemeral(interaction, "短休憩は 1〜60 分で指定してください。")
-            return
-        if not (1 <= long_break_minutes <= 120):
-            await _ephemeral(interaction, "長休憩は 1〜120 分で指定してください。")
-            return
-        if not (1 <= long_break_every <= 12):
-            await _ephemeral(interaction, "長休憩の頻度は 1〜12 で指定してください。")
-            return
+    def _parse_int(
+        self, raw: str, *, label: str, low: int, high: int
+    ) -> tuple[int | None, str | None]:
+        """Return (value, error_message). Exactly one is non-None."""
+        try:
+            value = int(raw.strip())
+        except ValueError:
+            return None, "数字で入力してください。"
+        if not (low <= value <= high):
+            unit = "" if label == "長休憩の頻度" else " 分"
+            return None, f"{label}は {low}〜{high}{unit} で指定してください。"
+        return value, None
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        raw_values = {
+            "work": self.work_input.value,
+            "short_break": self.short_break_input.value,
+            "long_break": self.long_break_input.value,
+            "long_every": self.long_every_input.value,
+        }
+        parsed: dict[str, int] = {}
+        for key, label, low, high in self._FIELDS:
+            value, err = self._parse_int(
+                raw_values[key], label=label, low=low, high=high
+            )
+            if err is not None:
+                await _ephemeral(interaction, err)
+                return
+            assert value is not None
+            parsed[key] = value
 
         plan = PhasePlan(
-            work_seconds=work_minutes * 60,
-            short_break_seconds=short_break_minutes * 60,
-            long_break_seconds=long_break_minutes * 60,
-            long_break_every=long_break_every,
+            work_seconds=parsed["work"] * 60,
+            short_break_seconds=parsed["short_break"] * 60,
+            long_break_seconds=parsed["long_break"] * 60,
+            long_break_every=parsed["long_every"],
         )
         result = await self._manager.update_plan(
             self._room_id,
@@ -164,7 +179,10 @@ class CycleSettingsModal(discord.ui.Modal):
             plan=plan,
         )
         if result is OpResult.OK:
-            await _ephemeral(interaction, "時間設定を更新し、現在フェーズをリセットしました。")
+            await _ephemeral(
+                interaction,
+                "時間設定を更新し、ラウンドを最初から再開します。",
+            )
         else:
             await _ephemeral(
                 interaction, REJECT_MESSAGES.get(result, "操作に失敗しました。")

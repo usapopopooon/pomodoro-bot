@@ -327,13 +327,17 @@ async def test_reset_owner_keeps_current_phase_and_rewinds_timer() -> None:
 
 
 @pytest.mark.asyncio
-async def test_update_plan_owner_updates_room_cycle() -> None:
+async def test_update_plan_owner_updates_room_cycle_and_resets_round() -> None:
     manager = _manager()
     state, _ = await _spawn_room(manager, creator=1)
     await manager.join(state.room_id, 1)
     try:
+        # Seed: mid-SHORT_BREAK with some completed WORKs already.
         before = datetime.now(UTC) - timedelta(seconds=1)
+        state.phase = Phase.SHORT_BREAK
         state.phase_started_at = before
+        state.completed_work_phases = 2
+
         plan = PhasePlan(
             work_seconds=30 * 60,
             short_break_seconds=7 * 60,
@@ -341,7 +345,11 @@ async def test_update_plan_owner_updates_room_cycle() -> None:
             long_break_every=3,
         )
         assert await manager.update_plan(state.room_id, 1, plan=plan) is OpResult.OK
+
+        # Plan applied; round restarted from scratch on WORK.
         assert state.plan == plan
+        assert state.phase is Phase.WORK
+        assert state.completed_work_phases == 0
         assert state.phase_started_at > before
 
         async with async_session() as db:
@@ -351,6 +359,29 @@ async def test_update_plan_owner_updates_room_cycle() -> None:
             assert room.short_break_seconds == 7 * 60
             assert room.long_break_seconds == 20 * 60
             assert room.long_break_every == 3
+    finally:
+        await manager.end(state.room_id, reason="test")
+
+
+@pytest.mark.asyncio
+async def test_update_plan_prevents_surprise_long_break() -> None:
+    """Tightening ``long_break_every`` mid-round must not make the very next
+    WORK completion jump to LONG_BREAK. Resetting ``completed_work_phases``
+    on plan update guarantees the new rules take effect from a clean slate.
+    """
+    manager = _manager()
+    state, _ = await _spawn_room(manager, creator=1)
+    await manager.join(state.room_id, 1)
+    try:
+        state.completed_work_phases = 3  # mid-round on the old rules
+        plan = PhasePlan(
+            work_seconds=25 * 60,
+            short_break_seconds=5 * 60,
+            long_break_seconds=15 * 60,
+            long_break_every=2,  # tightened from 4
+        )
+        assert await manager.update_plan(state.room_id, 1, plan=plan) is OpResult.OK
+        assert state.completed_work_phases == 0
     finally:
         await manager.end(state.room_id, reason="test")
 

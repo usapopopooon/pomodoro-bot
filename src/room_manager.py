@@ -261,13 +261,25 @@ class RoomManager:
         *,
         plan: PhasePlan,
     ) -> OpResult:
+        """Replace the room's cycle plan and start a fresh round.
+
+        We reset both the current phase timer AND ``completed_work_phases``.
+        Without the latter, changing ``long_break_every`` mid-round can make
+        the very next WORK completion trigger a long break (because the old
+        count still satisfies ``count % new_every == 0``), which is
+        surprising. Treating plan updates as "start the round over with the
+        new rules" is predictable and matches the user-facing message.
+        """
         state = self._rooms.get(room_id)
         if state is None:
             return OpResult.ROOM_NOT_FOUND
         if not state.is_owner(user_id):
             return OpResult.NOT_OWNER
         async with state.lock:
+            previous_completed = state.completed_work_phases
             state.plan = plan
+            state.phase = Phase.WORK
+            state.completed_work_phases = 0
             state.reset_current_phase()
             async with async_session() as db:
                 await svc.update_room_plan(
@@ -287,6 +299,7 @@ class RoomManager:
                         "short_break_seconds": plan.short_break_seconds,
                         "long_break_seconds": plan.long_break_seconds,
                         "long_break_every": plan.long_break_every,
+                        "previous_completed": previous_completed,
                     },
                 )
             await self._render(state)
