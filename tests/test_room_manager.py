@@ -504,7 +504,7 @@ async def test_create_and_start_raises_integrity_error_for_second_room_in_channe
     None
 ):
     """The partial unique index must bounce a second active room in the same
-    channel. The cog wraps this in a friendly ephemeral message."""
+    channel. The cog wraps this into a supersede+recreate flow."""
     manager = _manager()
     r1, _ = await _spawn_room(manager, creator=1, channel_id=500)
     try:
@@ -523,3 +523,37 @@ async def test_create_and_start_raises_integrity_error_for_second_room_in_channe
             assert len(rows) == 1
     finally:
         await manager.end(r1.room_id, reason="test")
+
+
+@pytest.mark.asyncio
+async def test_ending_old_room_frees_channel_for_a_new_one() -> None:
+    """Supersede flow from the cog: end the existing room, then
+    ``create_and_start`` succeeds in the same channel because the partial
+    unique index (``WHERE ended_at IS NULL``) now has no conflict."""
+    manager = _manager()
+    r1, _ = await _spawn_room(manager, creator=1, channel_id=777)
+    await manager.join(r1.room_id, 1)
+
+    # Same channel, new caller — this is what ``/pomo`` does now.
+    await manager.end(r1.room_id, reason="superseded")
+    assert manager.get(r1.room_id) is None
+
+    channel = _fake_channel(777)
+    r2 = await manager.create_and_start(
+        guild_id=None,
+        channel_id=777,
+        created_by=2,
+        channel=channel,
+    )
+    try:
+        assert r2.room_id != r1.room_id
+        assert r2.created_by == 2
+
+        async with async_session() as db:
+            # Old row closed with the supersede reason, new row active.
+            old = await db.get(PomodoroRoom, r1.room_id)
+            new = await db.get(PomodoroRoom, r2.room_id)
+            assert old is not None and old.ended_reason == "superseded"
+            assert new is not None and new.ended_at is None
+    finally:
+        await manager.end(r2.room_id, reason="test")

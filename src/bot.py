@@ -21,11 +21,6 @@ ORPHAN_PANEL_NOTICE = (
     "🍅 このポモドーロは Bot の再起動で終了しました。`/pomo` で作り直してください。"
 )
 
-ROOM_ALREADY_ACTIVE_MESSAGE = (
-    "このチャンネルにはすでにアクティブなポモドーロがあります。"
-    "終了してから新しいパネルを作成してください。"
-)
-
 
 def _build_default_plan() -> PhasePlan:
     return PhasePlan(
@@ -118,19 +113,27 @@ class PomodoroBot(commands.Bot):
             )
             return
 
-        async with async_session() as session:
-            existing = await svc.get_active_room_in_channel(session, channel.id)
-        if existing is not None:
-            await interaction.response.send_message(
-                ROOM_ALREADY_ACTIVE_MESSAGE, ephemeral=True
-            )
-            return
-
+        # Defer FIRST. Discord invalidates the interaction token after ~3s;
+        # the DB query below can take longer than that on a cold Railway
+        # connection, which used to raise "Unknown interaction" (10062)
+        # when defer() was called afterwards.
         await interaction.response.defer(thinking=True)
-        # The pre-check above is best-effort: two users firing ``/pomo``
-        # simultaneously can both pass it, and the second ``create_room``
-        # hits the partial-unique index on ``channel_id``. Catch that as a
-        # friendly ephemeral message instead of an unhandled traceback.
+
+        # ``/pomo`` should feel idempotent to a first-time user: run it,
+        # get a panel, every time. If a previous room is still active in
+        # this channel, close it quietly and put a fresh panel in its
+        # place. The old panel message is automatically edited into its
+        # "ended" embed by ``RoomManager.end``.
+        async with async_session() as db:
+            existing = await svc.get_active_room_in_channel(db, channel.id)
+        if existing is not None:
+            await self.room_manager.end(existing.id, reason="superseded")
+            # Safety net for the rare case where memory and DB disagree
+            # (e.g. a previous partial failure). ``end_room`` is a no-op
+            # once the row is already closed.
+            async with async_session() as db:
+                await svc.end_room(db, existing.id, reason="superseded")
+
         try:
             state = await self.room_manager.create_and_start(
                 guild_id=interaction.guild.id if interaction.guild else None,
@@ -139,8 +142,14 @@ class PomodoroBot(commands.Bot):
                 channel=channel,
             )
         except IntegrityError:
+            # True concurrent race: another user hit /pomo in this same
+            # channel at the same instant. Their panel wins, ours aborts.
             logger.info("concurrent panel creation lost race channel=%s", channel.id)
-            await interaction.followup.send(ROOM_ALREADY_ACTIVE_MESSAGE, ephemeral=True)
+            await interaction.followup.send(
+                "同時に他のメンバーがパネルを作成しました。"
+                "そちらのパネルをお使いください。",
+                ephemeral=True,
+            )
             return
 
         view = RoomPanelView(self.room_manager, state.room_id)
