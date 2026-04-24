@@ -66,8 +66,9 @@ class RoomManager:
         channel_id: int,
         created_by: int,
         channel: discord.abc.Messageable,
+        plan: PhasePlan | None = None,
     ) -> RoomState:
-        plan = self._default_plan
+        plan = plan or self._default_plan
         async with async_session() as db:
             row = await svc.create_room(
                 db,

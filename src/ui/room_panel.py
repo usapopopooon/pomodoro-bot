@@ -13,14 +13,14 @@ if TYPE_CHECKING:
 from src.room_manager import OpResult
 
 REJECT_MESSAGES: dict[OpResult, str] = {
-    OpResult.NOT_OWNER: "この操作はルームのオーナーのみ可能です。",
-    OpResult.NOT_A_PARTICIPANT: "このルームに参加してから操作してください。",
+    OpResult.NOT_OWNER: "この操作はオーナーのみ可能です。",
+    OpResult.NOT_A_PARTICIPANT: "先に 🙋 参加 してください。",
     OpResult.ALREADY_JOINED: "すでに参加しています。",
     OpResult.ROOM_NOT_FOUND: (
-        "このルームは見つかりません。パネルを作り直してください。"
+        "このポモドーロは見つかりません。`/pomo` で作り直してください。"
     ),
     OpResult.ANOTHER_ROOM: (
-        "他のルームに参加中です。そちらを退出してから参加してください。"
+        "他のポモドーロに参加中です。そちらを退出してから参加してください。"
     ),
 }
 
@@ -247,4 +247,4 @@ class RoomPanelView(discord.ui.View):
     ) -> None:
         await interaction.response.defer(ephemeral=True, thinking=False)
         result = await self._manager.end_by_owner(self._room_id, interaction.user.id)
-        await _reply(interaction, result, ok_text="ルームを終了しました。")
+        await _reply(interaction, result, ok_text="ポモドーロを終了しました。")

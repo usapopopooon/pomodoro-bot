@@ -47,7 +47,7 @@ def room_embed(state: RoomState) -> discord.Embed:
     ratio = elapsed.total_seconds() / total if total else 0
 
     phase = state.phase
-    title = f"🍅 ポモドーロルーム - {phase.label_ja}"
+    title = f"🍅 ポモドーロ - {phase.label_ja}"
     if state.is_paused:
         title += "(一時停止中)"
 
@@ -75,7 +75,7 @@ def room_embed(state: RoomState) -> discord.Embed:
 
 def ended_embed(state: RoomState, reason: str) -> discord.Embed:
     return discord.Embed(
-        title="🍅 ルーム終了",
+        title="🍅 ポモドーロ終了",
         description=(
             f"完了したラウンド: 🍅 × {state.completed_work_phases}\n"
             f"最終参加者: {len(state.participants)} 人\n"
