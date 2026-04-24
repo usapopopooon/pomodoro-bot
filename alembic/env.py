@@ -1,26 +1,46 @@
 from __future__ import annotations
 
+import os
 from logging.config import fileConfig
 
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-from src.config import settings
 from src.database.models import Base
+
+# NOTE: we intentionally read DATABASE_URL directly from the environment
+# here instead of going through ``src.config.settings``. The Settings object
+# validates DISCORD_TOKEN at construction time, which would force anyone
+# running ``alembic upgrade head`` (including the Railway boot script) to
+# also set DISCORD_TOKEN — but migrations have nothing to do with Discord.
+
+DEFAULT_DATABASE_URL = "postgresql://pomodoro:pomodoro@localhost:5432/pomodoro"
+
+
+def _sync_database_url() -> str:
+    url = os.environ.get("DATABASE_URL", DEFAULT_DATABASE_URL)
+    # Heroku / Railway hand out ``postgres://`` historically.
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql://", 1)
+    # The runtime uses asyncpg; alembic runs on a sync driver (psycopg2) so
+    # strip the async suffix if it's there.
+    return url.replace("postgresql+asyncpg://", "postgresql://")
+
 
 config = context.config
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-config.set_main_option("sqlalchemy.url", settings.sync_database_url)
+database_url = _sync_database_url()
+config.set_main_option("sqlalchemy.url", database_url)
 
 target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
     context.configure(
-        url=settings.sync_database_url,
+        url=database_url,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
