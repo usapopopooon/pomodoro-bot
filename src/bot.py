@@ -12,8 +12,8 @@ from src.core.phase import PhasePlan
 from src.database.engine import async_session, dispose_engine
 from src.room_manager import RoomManager
 from src.services import room_service as svc
-from src.ui.embeds import room_embed
-from src.ui.room_panel import RoomPanelView
+from src.ui.embeds import control_panel_embed
+from src.ui.panel_views import ControlPanelView
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +52,6 @@ class PomodoroBot(commands.Bot):
         )
         self.room_manager: RoomManager = RoomManager(
             default_plan=_build_default_plan(),
-            tick_seconds=settings.pomo_tick_seconds,
         )
 
     async def setup_hook(self) -> None:
@@ -135,11 +134,10 @@ class PomodoroBot(commands.Bot):
                 await svc.end_room(db, existing.id, reason="superseded")
 
         try:
-            state = await self.room_manager.create_and_start(
+            state = await self.room_manager.create_setup(
                 guild_id=interaction.guild.id if interaction.guild else None,
                 channel_id=channel.id,
                 created_by=interaction.user.id,
-                channel=channel,
             )
         except IntegrityError:
             # True concurrent race: another user hit /pomo in this same
@@ -152,12 +150,16 @@ class PomodoroBot(commands.Bot):
             )
             return
 
-        view = RoomPanelView(self.room_manager, state.room_id)
+        # The Control Panel lives as the persistent anchor message; phase
+        # announcements post separately once the owner hits Start. Note
+        # we pass ``has_started=False`` so the Start button is enabled.
+        view = ControlPanelView(self.room_manager, state.room_id, has_started=False)
         message = await interaction.followup.send(
-            embed=room_embed(state), view=view, wait=True
+            embed=control_panel_embed(state), view=view, wait=True
         )
         await self.room_manager.attach_message(state.room_id, message)
-        # Auto-join the creator so they're the first participant.
+        # Auto-join the creator so they're the first participant — this is
+        # UX-friendly and also guarantees a valid owner when phases start.
         await self.room_manager.join(state.room_id, interaction.user.id)
 
     # ------------------------------------------------------------------

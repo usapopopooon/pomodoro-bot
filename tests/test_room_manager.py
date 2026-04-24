@@ -44,12 +44,8 @@ async def _truncate() -> AsyncGenerator[None, None]:
         await cleanup.commit()
 
 
-def _manager(*, tick_seconds: int = 3600, every: int = 2) -> RoomManager:
-    # A huge tick keeps the background loop dormant during unit tests.
-    return RoomManager(
-        default_plan=PhasePlan(10, 2, 4, every),
-        tick_seconds=tick_seconds,
-    )
+def _manager(*, every: int = 2) -> RoomManager:
+    return RoomManager(default_plan=PhasePlan(10, 2, 4, every))
 
 
 def _fake_channel(channel_id: int = 555) -> SimpleNamespace:
@@ -57,19 +53,32 @@ def _fake_channel(channel_id: int = 555) -> SimpleNamespace:
 
 
 def _fake_message(channel: SimpleNamespace) -> SimpleNamespace:
-    msg = SimpleNamespace(id=1234, edit=AsyncMock(), channel=channel)
-    return msg
+    return SimpleNamespace(id=1234, edit=AsyncMock(), channel=channel)
 
 
-async def _spawn_room(manager: RoomManager, *, creator: int, channel_id: int = 555):  # type: ignore[no-untyped-def]
+async def _spawn_room(
+    manager: RoomManager,
+    *,
+    creator: int,
+    channel_id: int = 555,
+    running: bool = True,
+):  # type: ignore[no-untyped-def]
+    """Create a room in setup state and attach a fake Control Panel message.
+
+    By default we flip ``has_started=True`` (without spawning the real
+    phase-loop task) so owner-only ops — pause / skip / reset / update_plan
+    — are accepted. Pass ``running=False`` when testing the setup-state
+    behaviour explicitly.
+    """
     channel = _fake_channel(channel_id)
-    state = await manager.create_and_start(
+    state = await manager.create_setup(
         guild_id=None,
         channel_id=channel_id,
         created_by=creator,
-        channel=channel,
     )
     state.message = _fake_message(channel)
+    if running:
+        state.has_started = True
     return state, channel
 
 
@@ -79,11 +88,12 @@ async def _spawn_room(manager: RoomManager, *, creator: int, channel_id: int = 5
 
 
 @pytest.mark.asyncio
-async def test_create_and_start_persists_row_and_registers() -> None:
+async def test_create_setup_persists_row_and_registers() -> None:
     manager = _manager()
-    state, _ = await _spawn_room(manager, creator=1, channel_id=999)
+    state, _ = await _spawn_room(manager, creator=1, channel_id=999, running=False)
     try:
         assert manager.get(state.room_id) is state
+        assert state.has_started is False  # still in setup
 
         async with async_session() as db:
             rows = (await db.execute(select(PomodoroRoom))).scalars().all()
@@ -91,6 +101,41 @@ async def test_create_and_start_persists_row_and_registers() -> None:
             assert rows[0].channel_id == 999
             assert rows[0].created_by == 1
             assert rows[0].ended_at is None
+    finally:
+        await manager.end(state.room_id, reason="test")
+
+
+@pytest.mark.asyncio
+async def test_begin_phases_flips_has_started_and_starts_loop_task() -> None:
+    manager = _manager()
+    state, _ = await _spawn_room(manager, creator=1, channel_id=999, running=False)
+    try:
+        assert await manager.begin_phases(state.room_id, 1) is OpResult.OK
+        assert state.has_started is True
+        # Cancel the task we just kicked off to keep tests clean.
+        if state.task_handle is not None:
+            state.task_handle.cancel()
+    finally:
+        await manager.end(state.room_id, reason="test")
+
+
+@pytest.mark.asyncio
+async def test_begin_phases_rejected_for_non_owner() -> None:
+    manager = _manager()
+    state, _ = await _spawn_room(manager, creator=1, running=False)
+    try:
+        assert await manager.begin_phases(state.room_id, 999) is OpResult.NOT_OWNER
+        assert state.has_started is False
+    finally:
+        await manager.end(state.room_id, reason="test")
+
+
+@pytest.mark.asyncio
+async def test_begin_phases_rejects_double_start() -> None:
+    manager = _manager()
+    state, _ = await _spawn_room(manager, creator=1, running=True)
+    try:
+        assert await manager.begin_phases(state.room_id, 1) is OpResult.ALREADY_STARTED
     finally:
         await manager.end(state.room_id, reason="test")
 
@@ -156,7 +201,6 @@ async def test_join_switches_user_across_rooms() -> None:
     try:
         await manager.join(r1.room_id, 9)
         assert r1.has_participant(9)
-        # Joining r2 should evict from r1 automatically.
         assert await manager.join(r2.room_id, 9) is OpResult.OK
         assert not r1.has_participant(9)
         assert r2.has_participant(9)
@@ -215,12 +259,11 @@ async def test_leave_non_participant_returns_not_a_participant() -> None:
 async def test_leave_transfers_ownership_to_earliest_remaining() -> None:
     manager = _manager()
     state, _ = await _spawn_room(manager, creator=1)
-    await manager.join(state.room_id, 1)  # owner joins too
+    await manager.join(state.room_id, 1)
     await manager.join(state.room_id, 2)
     await manager.join(state.room_id, 3)
     try:
         assert await manager.leave(state.room_id, 1) is OpResult.OK
-        # Heir is the earliest remaining — user 2 joined before user 3.
         assert state.created_by == 2
         async with async_session() as db:
             room = await db.get(PomodoroRoom, state.room_id)
@@ -291,6 +334,36 @@ async def test_pause_by_owner_toggles() -> None:
 
 
 @pytest.mark.asyncio
+async def test_pause_rejected_before_timer_started() -> None:
+    manager = _manager()
+    state, _ = await _spawn_room(manager, creator=1, running=False)
+    try:
+        assert await manager.toggle_pause(state.room_id, 1) is OpResult.NOT_YET_STARTED
+    finally:
+        await manager.end(state.room_id, reason="test")
+
+
+@pytest.mark.asyncio
+async def test_skip_rejected_before_timer_started() -> None:
+    manager = _manager()
+    state, _ = await _spawn_room(manager, creator=1, running=False)
+    try:
+        assert await manager.skip(state.room_id, 1) is OpResult.NOT_YET_STARTED
+    finally:
+        await manager.end(state.room_id, reason="test")
+
+
+@pytest.mark.asyncio
+async def test_reset_rejected_before_timer_started() -> None:
+    manager = _manager()
+    state, _ = await _spawn_room(manager, creator=1, running=False)
+    try:
+        assert await manager.reset(state.room_id, 1) is OpResult.NOT_YET_STARTED
+    finally:
+        await manager.end(state.room_id, reason="test")
+
+
+@pytest.mark.asyncio
 async def test_skip_owner_advances_without_counting_completion() -> None:
     manager = _manager()
     state, _ = await _spawn_room(manager, creator=1)
@@ -332,7 +405,6 @@ async def test_update_plan_owner_updates_room_cycle_and_resets_round() -> None:
     state, _ = await _spawn_room(manager, creator=1)
     await manager.join(state.room_id, 1)
     try:
-        # Seed: mid-SHORT_BREAK with some completed WORKs already.
         before = datetime.now(UTC) - timedelta(seconds=1)
         state.phase = Phase.SHORT_BREAK
         state.phase_started_at = before
@@ -346,7 +418,6 @@ async def test_update_plan_owner_updates_room_cycle_and_resets_round() -> None:
         )
         assert await manager.update_plan(state.room_id, 1, plan=plan) is OpResult.OK
 
-        # Plan applied; round restarted from scratch on WORK.
         assert state.plan == plan
         assert state.phase is Phase.WORK
         assert state.completed_work_phases == 0
@@ -364,21 +435,35 @@ async def test_update_plan_owner_updates_room_cycle_and_resets_round() -> None:
 
 
 @pytest.mark.asyncio
+async def test_update_plan_during_setup_does_not_touch_timing() -> None:
+    """Before the timer starts, updating the plan persists the new values
+    but must not mutate phase/completed counters (there's nothing to
+    "reset" in setup state)."""
+    manager = _manager()
+    state, _ = await _spawn_room(manager, creator=1, running=False)
+    try:
+        original_start = state.phase_started_at
+        plan = PhasePlan(30 * 60, 7 * 60, 20 * 60, 3)
+        assert await manager.update_plan(state.room_id, 1, plan=plan) is OpResult.OK
+        assert state.plan == plan
+        # Setup state: phase_started_at is unchanged.
+        assert state.phase_started_at == original_start
+    finally:
+        await manager.end(state.room_id, reason="test")
+
+
+@pytest.mark.asyncio
 async def test_update_plan_prevents_surprise_long_break() -> None:
-    """Tightening ``long_break_every`` mid-round must not make the very next
-    WORK completion jump to LONG_BREAK. Resetting ``completed_work_phases``
-    on plan update guarantees the new rules take effect from a clean slate.
-    """
     manager = _manager()
     state, _ = await _spawn_room(manager, creator=1)
     await manager.join(state.room_id, 1)
     try:
-        state.completed_work_phases = 3  # mid-round on the old rules
+        state.completed_work_phases = 3
         plan = PhasePlan(
             work_seconds=25 * 60,
             short_break_seconds=5 * 60,
             long_break_seconds=15 * 60,
-            long_break_every=2,  # tightened from 4
+            long_break_every=2,
         )
         assert await manager.update_plan(state.room_id, 1, plan=plan) is OpResult.OK
         assert state.completed_work_phases == 0
@@ -423,7 +508,7 @@ async def test_handle_phase_end_credits_each_active_participant() -> None:
     await manager.join(state.room_id, 1, task="focus")
     await manager.join(state.room_id, 2, task="study")
     await manager.join(state.room_id, 3)
-    await manager.leave(state.room_id, 3)  # left before phase end
+    await manager.leave(state.room_id, 3)
 
     try:
         await manager._handle_phase_end(state, channel)
@@ -432,7 +517,6 @@ async def test_handle_phase_end_credits_each_active_participant() -> None:
 
         async with async_session() as db:
             pomos = (await db.execute(select(Pomodoro))).scalars().all()
-            # Only users 1 and 2 should be credited (3 left first).
             assert sorted(p.user_id for p in pomos) == [1, 2]
             tasks = {p.user_id: p.task for p in pomos}
             assert tasks[1] == "focus"
@@ -467,21 +551,13 @@ async def test_two_rooms_run_independently() -> None:
 
 @pytest.mark.asyncio
 async def test_simultaneous_cross_room_joins_do_not_deadlock() -> None:
-    """Two users swapping rooms in opposite directions used to deadlock
-    because ``join`` held the target room's lock while acquiring the other
-    room's lock via ``_evict_from_other_rooms``. After the fix, eviction
-    runs outside the target lock and the swap always completes.
-    """
     manager = _manager()
     r1, _ = await _spawn_room(manager, creator=1, channel_id=111)
     r2, _ = await _spawn_room(manager, creator=2, channel_id=222)
     try:
-        # Seed: user 100 in r1, user 200 in r2.
         assert await manager.join(r1.room_id, 100) is OpResult.OK
         assert await manager.join(r2.room_id, 200) is OpResult.OK
 
-        # Swap them concurrently. A 5s wait_for is a generous upper bound;
-        # with the deadlock still present this hangs forever.
         results = await asyncio.wait_for(
             asyncio.gather(
                 manager.join(r2.room_id, 100),
@@ -491,7 +567,6 @@ async def test_simultaneous_cross_room_joins_do_not_deadlock() -> None:
         )
         assert results == [OpResult.OK, OpResult.OK]
 
-        # Final in-memory state: users ended up in the other room.
         assert r1.has_participant(200) and not r1.has_participant(100)
         assert r2.has_participant(100) and not r2.has_participant(200)
     finally:
@@ -500,23 +575,12 @@ async def test_simultaneous_cross_room_joins_do_not_deadlock() -> None:
 
 
 @pytest.mark.asyncio
-async def test_create_and_start_raises_integrity_error_for_second_room_in_channel() -> (
-    None
-):
-    """The partial unique index must bounce a second active room in the same
-    channel. The cog wraps this into a supersede+recreate flow."""
+async def test_create_setup_raises_integrity_error_for_second_room_in_channel() -> None:
     manager = _manager()
     r1, _ = await _spawn_room(manager, creator=1, channel_id=500)
     try:
-        channel = _fake_channel(500)
         with pytest.raises(IntegrityError):
-            await manager.create_and_start(
-                guild_id=None,
-                channel_id=500,
-                created_by=2,
-                channel=channel,
-            )
-        # First room must still be intact.
+            await manager.create_setup(guild_id=None, channel_id=500, created_by=2)
         assert manager.get(r1.room_id) is r1
         async with async_session() as db:
             rows = (await db.execute(select(PomodoroRoom))).scalars().all()
@@ -527,33 +591,70 @@ async def test_create_and_start_raises_integrity_error_for_second_room_in_channe
 
 @pytest.mark.asyncio
 async def test_ending_old_room_frees_channel_for_a_new_one() -> None:
-    """Supersede flow from the cog: end the existing room, then
-    ``create_and_start`` succeeds in the same channel because the partial
-    unique index (``WHERE ended_at IS NULL``) now has no conflict."""
     manager = _manager()
     r1, _ = await _spawn_room(manager, creator=1, channel_id=777)
     await manager.join(r1.room_id, 1)
 
-    # Same channel, new caller — this is what ``/pomo`` does now.
     await manager.end(r1.room_id, reason="superseded")
     assert manager.get(r1.room_id) is None
 
-    channel = _fake_channel(777)
-    r2 = await manager.create_and_start(
-        guild_id=None,
-        channel_id=777,
-        created_by=2,
-        channel=channel,
-    )
+    r2 = await manager.create_setup(guild_id=None, channel_id=777, created_by=2)
     try:
         assert r2.room_id != r1.room_id
         assert r2.created_by == 2
 
         async with async_session() as db:
-            # Old row closed with the supersede reason, new row active.
             old = await db.get(PomodoroRoom, r1.room_id)
             new = await db.get(PomodoroRoom, r2.room_id)
             assert old is not None and old.ended_reason == "superseded"
             assert new is not None and new.ended_at is None
     finally:
         await manager.end(r2.room_id, reason="test")
+
+
+# ---------------------------------------------------------------------------
+# Regression: the natural-timeout branch of _run_phase_loop must call
+# _handle_phase_end and advance the phase. We force this by giving WORK a
+# 0-second duration and letting the loop's wait_for time out immediately.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_phase_loop_advances_phase_on_natural_timeout() -> None:
+    # Zero-length WORK → the loop's wait_for returns TimeoutError on the
+    # very first iteration, which is what triggers ``_handle_phase_end``.
+    manager = RoomManager(
+        default_plan=PhasePlan(
+            work_seconds=0,
+            short_break_seconds=3600,
+            long_break_seconds=3600,
+            long_break_every=4,
+        ),
+    )
+    state, _ = await _spawn_room(manager, creator=1, running=False)
+    await manager.join(state.room_id, 1, task="focus")
+
+    try:
+        assert await manager.begin_phases(state.room_id, 1) is OpResult.OK
+
+        # Give the loop a moment to process the timeout → phase end.
+        # Polling is intentional here: we're watching an externally-
+        # scheduled task flip state. A sync primitive would require
+        # threading test-only instrumentation into production code.
+        async def _wait_for_advance() -> None:
+            while state.phase is Phase.WORK:  # noqa: ASYNC110
+                await asyncio.sleep(0.02)
+
+        await asyncio.wait_for(_wait_for_advance(), timeout=3.0)
+
+        # WORK naturally ended → SHORT_BREAK, completed count ticked up,
+        # and a pomodoro row landed in the DB.
+        assert state.phase is Phase.SHORT_BREAK
+        assert state.completed_work_phases == 1
+        async with async_session() as db:
+            pomos = (await db.execute(select(Pomodoro))).scalars().all()
+            assert len(pomos) == 1
+            assert pomos[0].user_id == 1
+            assert pomos[0].task == "focus"
+    finally:
+        await manager.end(state.room_id, reason="test")

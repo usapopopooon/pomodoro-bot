@@ -86,7 +86,6 @@ Discord サーバで `/pomo` を叩くとパネルが出ます。
 | `POMO_SHORT_BREAK_SECONDS` | `300` (5 分) | 短休憩の長さ |
 | `POMO_LONG_BREAK_SECONDS` | `900` (15 分) | 長休憩の長さ |
 | `POMO_LONG_BREAK_EVERY` | `4` | N 回目の WORK 完了で長休憩へ |
-| `POMO_TICK_SECONDS` | `10` | Embed を更新する間隔 |
 | `LOG_LEVEL` | `INFO` | stdlib logging レベル |
 
 ## Railway デプロイ

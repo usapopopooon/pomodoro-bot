@@ -1,69 +1,74 @@
-from __future__ import annotations
+"""Embed and message-content builders.
 
-from datetime import timedelta
+Two surfaces:
+
+* **Control Panel** — persistent message that hosts configuration + roster.
+  One per room, edited in place.
+* **Phase announcement** — transient per-phase text message (with a timer
+  image attached). A fresh message is posted each time the phase flips.
+
+The LionBot reference uses plain text content + an image attachment for the
+phase surface, and an embed-with-fields for the control surface; we match
+that split.
+"""
+
+from __future__ import annotations
 
 import discord
 
-from src.constants import (
-    PHASE_COLOR_ENDED,
-    PROGRESS_BAR_EMPTY,
-    PROGRESS_BAR_FILLED,
-    PROGRESS_BAR_LENGTH,
-)
+from src.constants import PHASE_COLOR_ENDED
 from src.core.phase import Phase
 from src.core.room_state import RoomState
 
-
-def _progress_bar(ratio: float) -> str:
-    filled = max(0, min(PROGRESS_BAR_LENGTH, round(ratio * PROGRESS_BAR_LENGTH)))
-    empty = PROGRESS_BAR_LENGTH - filled
-    return PROGRESS_BAR_FILLED * filled + PROGRESS_BAR_EMPTY * empty
+# ---------------------------------------------------------------------------
+# Control Panel (persistent message)
+# ---------------------------------------------------------------------------
 
 
-def _format_clock(td: timedelta) -> str:
-    total = max(0, int(td.total_seconds()))
-    return f"{total // 60:02d}:{total % 60:02d}"
+def _format_plan_summary(state: RoomState) -> str:
+    p = state.plan
+    return (
+        f"{p.work_seconds // 60}分 作業 / "
+        f"{p.short_break_seconds // 60}分 短休憩 / "
+        f"{p.long_break_seconds // 60}分 長休憩 × "
+        f"{p.long_break_every} サイクルで長休憩"
+    )
 
 
 def _format_participants(state: RoomState) -> str:
     if not state.participants:
-        return "_参加者はまだいません。🙋 参加 から始めましょう。_"
-
-    lines: list[str] = []
-    # Stable ordering: earliest joiner first.
+        return "_まだ誰も参加していません。🙋 参加 を押してください。_"
     ordered = sorted(state.participants.values(), key=lambda p: p.joined_at)
+    lines: list[str] = []
     for p in ordered:
         marker = "👑" if p.user_id == state.created_by else "•"
-        task = p.task if p.task else "—"
+        task = p.task or "—"
         lines.append(f"{marker} <@{p.user_id}> — {task}")
     return "\n".join(lines)
 
 
-def room_embed(state: RoomState) -> discord.Embed:
-    remaining = state.remaining()
-    duration = timedelta(seconds=state.phase_duration_seconds)
-    elapsed = duration - remaining
-    total = duration.total_seconds()
-    ratio = elapsed.total_seconds() / total if total else 0
+def control_panel_embed(state: RoomState) -> discord.Embed:
+    """Config + roster embed shown at the Control Panel message.
 
-    phase = state.phase
-    title = f"🍅 ポモドーロ - {phase.label_ja}"
-    if state.is_paused:
-        title += "(一時停止中)"
+    While in *setup* state the primary affordance is the Start button; while
+    *running* the embed shows the current phase. The embed color switches
+    between phase-color-when-running and a neutral blue when in setup.
+    """
+    color = state.phase.color if state.has_started else 0x7289DA
 
-    description_lines = [
-        "━━━━━━━━━━━━━━━━━━━━",
-        f"⏱  {_format_clock(elapsed)} / {_format_clock(duration)}",
-        f"{_progress_bar(ratio)}  {int(ratio * 100)}%",
-        "",
-        f"🍅 このラウンドの完了: {state.completed_work_phases} 個",
-    ]
+    if state.has_started:
+        status_line = f"**{state.phase.label_ja}** セッション実行中"
+        if state.is_paused:
+            status_line += "(一時停止中)"
+    else:
+        status_line = "**未開始** — オーナーが ▶️ 開始 を押すと始まります"
 
     embed = discord.Embed(
-        title=title,
-        description="\n".join(description_lines),
-        color=phase.color,
+        title="🍅 ポモドーロ コントロールパネル",
+        description=status_line,
+        color=color,
     )
+    embed.add_field(name="⏱ 時間設定", value=_format_plan_summary(state), inline=False)
     embed.add_field(
         name=f"👥 参加者 ({len(state.participants)})",
         value=_format_participants(state),
@@ -85,6 +90,44 @@ def ended_embed(state: RoomState, reason: str) -> discord.Embed:
     )
 
 
+# ---------------------------------------------------------------------------
+# Phase-transition message (content + attachment; no embed)
+# ---------------------------------------------------------------------------
+
+
+def phase_announcement_content(
+    *,
+    phase: Phase,
+    phase_minutes: int,
+    next_phase_minutes: int,
+) -> str:
+    """Plain-text content for the phase-transition message.
+
+    Matches LionBot's format ``"... is now in FOCUS! BREAK starts 25分後"``.
+    The image attachment carries the visual; the text explains what happened
+    in terms accessible to screen readers and inline previews.
+    """
+    if phase is Phase.WORK:
+        return (
+            f"🍅 **{phase.label_ja}** フェーズ開始! "
+            f"({phase_minutes} 分間集中 → **休憩 {next_phase_minutes} 分**)"
+        )
+    if phase is Phase.SHORT_BREAK:
+        return (
+            f"☕ **{phase.label_ja}** です。お疲れさま! "
+            f"({phase_minutes} 分 → 次は **作業 {next_phase_minutes} 分**)"
+        )
+    return (
+        f"🛌 **{phase.label_ja}** です。しっかり休んでください! "
+        f"({phase_minutes} 分 → 次は **作業 {next_phase_minutes} 分**)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Stats (kept from previous revision)
+# ---------------------------------------------------------------------------
+
+
 def stats_embed(
     user: discord.abc.User, today: int, week: int, total: int
 ) -> discord.Embed:
@@ -96,13 +139,3 @@ def stats_embed(
     embed.add_field(name="今週", value=f"🍅 × {week}", inline=True)
     embed.add_field(name="累計", value=f"🍅 × {total}", inline=True)
     return embed
-
-
-def transition_message(next_phase: Phase, completed: int) -> str:
-    match next_phase:
-        case Phase.WORK:
-            return f"🍅 作業開始!(これまで {completed} 🍅)"
-        case Phase.SHORT_BREAK:
-            return f"☕ 短休憩です。(完了 {completed} 🍅)"
-        case Phase.LONG_BREAK:
-            return f"🛌 長休憩です。お疲れさま!(完了 {completed} 🍅)"

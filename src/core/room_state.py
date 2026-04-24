@@ -24,10 +24,13 @@ class RoomState:
     """In-memory view of a running room.
 
     Persistence is intentionally thin: completed pomodoros and lifecycle events
-    go to the DB, but tick-by-tick timer state lives here only. On bot
-    restart, the room is closed with ``bot_restart`` and recreated via the
-    panel. A per-room ``lock`` serialises button-driven mutations so two
-    users can't pause/skip at the same instant.
+    go to the DB, but phase timing state lives here only. On bot restart, the
+    room is closed with ``bot_restart`` and must be recreated via the panel.
+
+    ``lock`` serialises button-driven mutations. ``wake_event`` signals the
+    phase loop whenever state changes — the loop uses ``wait_for(wake_event,
+    timeout=remaining)`` to sleep until either the phase naturally ends
+    (timeout) or a user acts on the room (event fires).
     """
 
     room_id: UUID
@@ -42,11 +45,22 @@ class RoomState:
     paused_accumulated: timedelta = field(default_factory=timedelta)
     completed_work_phases: int = 0
 
+    # ``has_started`` gates the phase loop. ``/pomo`` creates a room with
+    # ``has_started=False`` and shows the Control Panel; the owner presses
+    # Start to flip this flag, which kicks off the actual timer.
+    has_started: bool = False
+
     participants: dict[int, ParticipantState] = field(default_factory=dict)
 
+    # ``message`` is the persistent Control Panel message.
+    # Phase-transition announcements live as separate channel messages —
+    # we keep only the most recent one around so we can strip its buttons
+    # when a new phase begins.
     message: discord.Message | None = None
+    last_phase_message: discord.Message | None = None
     task_handle: asyncio.Task[None] | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    wake_event: asyncio.Event = field(default_factory=asyncio.Event)
 
     # ------------------------------------------------------------------
     # Timer math

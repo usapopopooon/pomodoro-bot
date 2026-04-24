@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from enum import StrEnum
 from uuid import UUID
@@ -26,6 +27,8 @@ class OpResult(StrEnum):
     NOT_A_PARTICIPANT = "not_a_participant"
     NOT_OWNER = "not_owner"
     ALREADY_JOINED = "already_joined"
+    ALREADY_STARTED = "already_started"
+    NOT_YET_STARTED = "not_yet_started"
     ROOM_NOT_FOUND = "room_not_found"
     ANOTHER_ROOM = "another_room"
 
@@ -33,16 +36,23 @@ class OpResult(StrEnum):
 class RoomManager:
     """Owns live rooms, keyed by ``room_id``.
 
-    One ``SessionManager`` used to mean one user, one session. ``RoomManager``
-    inverts that: many participants can share one room, many rooms can run in
-    different channels concurrently, and every button action funnels through
-    here so the DB, the in-memory state, and the Discord panel stay in sync.
+    Two phases per room life:
+      * **Setup** — ``/pomo`` posts a Control Panel. ``has_started`` is
+        False; the phase loop hasn't been kicked off. Participants can
+        still join, owner can edit the plan, and no timer is ticking.
+      * **Running** — owner presses Start on the Control Panel, which
+        calls :meth:`begin_phases`. The phase loop starts and posts a
+        phase-transition message (with a PNG timer image) every time a
+        phase flips.
+
+    The phase loop sleeps until the current phase naturally ends, and is
+    woken early via ``state.wake_event`` whenever the user pauses, skips,
+    resets, or updates the plan. No 10-second ticking.
     """
 
-    def __init__(self, *, default_plan: PhasePlan, tick_seconds: int) -> None:
+    def __init__(self, *, default_plan: PhasePlan) -> None:
         self._rooms: dict[UUID, RoomState] = {}
         self._default_plan = default_plan
-        self._tick_seconds = tick_seconds
         self._registry_lock = asyncio.Lock()
 
     @property
@@ -59,15 +69,19 @@ class RoomManager:
     # Lifecycle
     # ------------------------------------------------------------------
 
-    async def create_and_start(
+    async def create_setup(
         self,
         *,
         guild_id: int | None,
         channel_id: int,
         created_by: int,
-        channel: discord.abc.Messageable,
         plan: PhasePlan | None = None,
     ) -> RoomState:
+        """Create a room in **setup** state.
+
+        No phase loop is started; the caller is expected to post a Control
+        Panel and later call :meth:`begin_phases` when the owner is ready.
+        """
         plan = plan or self._default_plan
         async with async_session() as db:
             row = await svc.create_room(
@@ -97,13 +111,45 @@ class RoomManager:
         async with self._registry_lock:
             self._rooms[row.id] = state
 
-        state.task_handle = asyncio.create_task(
-            self._run_loop(state, channel), name=f"pomo-room-{row.id}"
-        )
         logger.info(
-            "room.created room_id=%s channel=%s by=%s", row.id, channel_id, created_by
+            "room.created (setup) room_id=%s channel=%s by=%s",
+            row.id,
+            channel_id,
+            created_by,
         )
         return state
+
+    async def begin_phases(self, room_id: UUID, user_id: int) -> OpResult:
+        """Flip the room from setup to running and start the phase loop."""
+        state = self._rooms.get(room_id)
+        if state is None:
+            return OpResult.ROOM_NOT_FOUND
+        if not state.is_owner(user_id):
+            return OpResult.NOT_OWNER
+        if state.has_started:
+            return OpResult.ALREADY_STARTED
+        if state.message is None:
+            # No Control Panel to anchor the channel on — shouldn't happen
+            # in normal flow but guard anyway.
+            return OpResult.ROOM_NOT_FOUND
+
+        async with state.lock:
+            state.has_started = True
+            state.phase = Phase.WORK
+            state.completed_work_phases = 0
+            state.reset_current_phase()
+            async with async_session() as db:
+                await svc.record_event(db, room_id=room_id, event_type="timer_started")
+            # Re-render the Control Panel so the Start button flips to
+            # "開始中" (disabled) and the embed status line changes.
+            await self._render_control_panel(state)
+
+        channel = state.message.channel
+        state.task_handle = asyncio.create_task(
+            self._run_phase_loop(state, channel),
+            name=f"pomo-phases-{room_id}",
+        )
+        return OpResult.OK
 
     async def attach_message(self, room_id: UUID, message: discord.Message) -> None:
         state = self._rooms.get(room_id)
@@ -144,6 +190,12 @@ class RoomManager:
             except discord.HTTPException:
                 logger.warning("room.end edit failed room_id=%s", room_id)
 
+        # Strip buttons off the most recent phase message too so users
+        # can't click stale controls.
+        if state.last_phase_message is not None:
+            with contextlib.suppress(discord.HTTPException):
+                await state.last_phase_message.edit(view=None)
+
         logger.info("room.ended room_id=%s reason=%s", room_id, reason)
         return state
 
@@ -162,11 +214,6 @@ class RoomManager:
         if state is None:
             return OpResult.ROOM_NOT_FOUND
 
-        # Evict from any other in-memory room BEFORE acquiring this room's
-        # lock. Holding ``state.lock`` while waiting on another room's lock
-        # used to deadlock when two users swapped rooms in opposite
-        # directions (A: r1→r2, B: r2→r1). ``svc.join_room`` closes the old
-        # DB participation; this call mirrors that in memory.
         await self._evict_from_other_rooms(user_id, except_room_id=room_id)
 
         async with state.lock:
@@ -183,7 +230,7 @@ class RoomManager:
                 )
 
             state.add_participant(user_id, task=task)
-            await self._render(state)
+            await self._render_control_panel(state)
             return OpResult.OK
 
     async def leave(self, room_id: UUID, user_id: int) -> OpResult:
@@ -221,12 +268,10 @@ class RoomManager:
                         event_type="ownership_transferred",
                         payload={"from": user_id, "to": heir},
                     )
-                await self._render(state)
+                await self._render_control_panel(state)
             else:
-                await self._render(state)
+                await self._render_control_panel(state)
 
-        # ``end`` re-acquires registry lock + cancels the loop task, so only
-        # call it after releasing ``state.lock``.
         if should_end_reason is not None:
             await self.end(room_id, reason=should_end_reason)
         return OpResult.OK
@@ -251,7 +296,7 @@ class RoomManager:
                     payload={"user_id": user_id, "task": task},
                 )
             state.set_participant_task(user_id, task)
-            await self._render(state)
+            await self._render_control_panel(state)
             return OpResult.OK
 
     async def update_plan(
@@ -261,14 +306,11 @@ class RoomManager:
         *,
         plan: PhasePlan,
     ) -> OpResult:
-        """Replace the room's cycle plan and start a fresh round.
+        """Replace the cycle plan.
 
-        We reset both the current phase timer AND ``completed_work_phases``.
-        Without the latter, changing ``long_break_every`` mid-round can make
-        the very next WORK completion trigger a long break (because the old
-        count still satisfies ``count % new_every == 0``), which is
-        surprising. Treating plan updates as "start the round over with the
-        new rules" is predictable and matches the user-facing message.
+        During setup: just update the plan, no side effects on timing.
+        During running: also rewind to WORK phase 1 to avoid surprising
+        long-break-every shortening edge cases.
         """
         state = self._rooms.get(room_id)
         if state is None:
@@ -278,9 +320,10 @@ class RoomManager:
         async with state.lock:
             previous_completed = state.completed_work_phases
             state.plan = plan
-            state.phase = Phase.WORK
-            state.completed_work_phases = 0
-            state.reset_current_phase()
+            if state.has_started:
+                state.phase = Phase.WORK
+                state.completed_work_phases = 0
+                state.reset_current_phase()
             async with async_session() as db:
                 await svc.update_room_plan(
                     db,
@@ -302,11 +345,15 @@ class RoomManager:
                         "previous_completed": previous_completed,
                     },
                 )
-            await self._render(state)
+            await self._render_control_panel(state)
+            # Only the phase loop reads wake_event, so don't bother setting
+            # it before the loop has been started (setup state).
+            if state.has_started:
+                state.wake_event.set()
             return OpResult.OK
 
     # ------------------------------------------------------------------
-    # Owner-only ops
+    # Owner-only ops (only meaningful while running)
     # ------------------------------------------------------------------
 
     async def toggle_pause(self, room_id: UUID, user_id: int) -> OpResult:
@@ -315,6 +362,8 @@ class RoomManager:
             return OpResult.ROOM_NOT_FOUND
         if not state.is_owner(user_id):
             return OpResult.NOT_OWNER
+        if not state.has_started:
+            return OpResult.NOT_YET_STARTED
         async with state.lock:
             event_type = "resumed" if state.is_paused else "paused"
             if state.is_paused:
@@ -323,7 +372,8 @@ class RoomManager:
                 state.pause()
             async with async_session() as db:
                 await svc.record_event(db, room_id=room_id, event_type=event_type)
-            await self._render(state)
+            await self._render_control_panel(state)
+            state.wake_event.set()
         return OpResult.OK
 
     async def skip(self, room_id: UUID, user_id: int) -> OpResult:
@@ -332,6 +382,8 @@ class RoomManager:
             return OpResult.ROOM_NOT_FOUND
         if not state.is_owner(user_id):
             return OpResult.NOT_OWNER
+        if not state.has_started:
+            return OpResult.NOT_YET_STARTED
         async with state.lock:
             previous = state.phase
             state.advance_phase(count_completion=False)
@@ -342,8 +394,8 @@ class RoomManager:
                     event_type="phase_skipped",
                     payload={"from": previous, "to": state.phase},
                 )
-            await self._announce_phase(state)
-            await self._render(state)
+            state.wake_event.set()
+        # Posting the new phase message happens in the loop after wake.
         return OpResult.OK
 
     async def reset(self, room_id: UUID, user_id: int) -> OpResult:
@@ -352,11 +404,14 @@ class RoomManager:
             return OpResult.ROOM_NOT_FOUND
         if not state.is_owner(user_id):
             return OpResult.NOT_OWNER
+        if not state.has_started:
+            return OpResult.NOT_YET_STARTED
         async with state.lock:
             state.reset_current_phase()
             async with async_session() as db:
                 await svc.record_event(db, room_id=room_id, event_type="reset")
-            await self._render(state)
+            await self._render_control_panel(state)
+            state.wake_event.set()
         return OpResult.OK
 
     async def end_by_owner(self, room_id: UUID, user_id: int) -> OpResult:
@@ -375,52 +430,69 @@ class RoomManager:
     async def _evict_from_other_rooms(
         self, user_id: int, *, except_room_id: UUID
     ) -> None:
-        """Remove ``user_id`` from every in-memory room except ``except_room_id``.
-
-        ``svc.join_room`` already closes stale DB participations when a user
-        switches rooms; this call mirrors a real leave operation so ownership
-        transfer, auto-end, and lifecycle events stay consistent. Called from
-        ``join`` *before* the target room's lock is acquired so that two
-        concurrent swaps in opposite directions cannot cycle on room locks.
-        """
         targets = [
             r
             for r in list(self._rooms.values())
             if r.room_id != except_room_id and user_id in r.participants
         ]
         for other in targets:
-            # Route through leave() so DB + events + owner logic all stay
-            # aligned with explicit "退出" button behaviour.
             await self.leave(other.room_id, user_id)
 
-    async def _run_loop(
+    async def _run_phase_loop(
         self, state: RoomState, channel: discord.abc.Messageable
     ) -> None:
+        """Post phase announcements on boundaries; sleep between them.
+
+        The loop sleeps for exactly the current phase's remaining time,
+        but ``state.wake_event`` can wake it early for pause/skip/reset/
+        plan-update. After waking, the loop re-evaluates the current
+        phase state and recomputes its next sleep.
+        """
         try:
+            # Kick off with the initial phase announcement.
+            await self._post_phase_start_message(state, channel)
+
             while True:
-                await asyncio.sleep(self._tick_seconds)
                 if state.is_paused:
-                    await self._render(state)
+                    await state.wake_event.wait()
+                    state.wake_event.clear()
                     continue
 
-                if state.remaining().total_seconds() <= 0:
+                remaining = state.remaining().total_seconds()
+                if remaining <= 0:
                     await self._handle_phase_end(state, channel)
+                    state.wake_event.clear()
+                    continue
 
-                await self._render(state)
+                try:
+                    await asyncio.wait_for(state.wake_event.wait(), timeout=remaining)
+                    state.wake_event.clear()
+                    # Something changed (pause/skip/reset/plan) — loop and
+                    # re-evaluate.
+                except TimeoutError:
+                    # Natural phase end.
+                    await self._handle_phase_end(state, channel)
         except asyncio.CancelledError:
-            logger.debug("room loop cancelled room_id=%s", state.room_id)
+            logger.debug("phase loop cancelled room_id=%s", state.room_id)
             raise
         except Exception:
-            logger.exception("room loop errored room_id=%s", state.room_id)
+            logger.exception("phase loop errored room_id=%s", state.room_id)
             await self.end(state.room_id, reason="error")
 
     async def _handle_phase_end(
         self, state: RoomState, channel: discord.abc.Messageable
     ) -> None:
-        phase_just_ended = state.phase
-        duration = state.phase_duration_seconds
+        """Handle the natural end of the current phase.
 
+        ``phase_just_ended`` is read inside the lock so a concurrent ``skip``
+        that advanced the phase before we could acquire the lock doesn't
+        make us credit the wrong phase or double-advance. In that case the
+        phase has already changed and ``advance_phase`` correctly applies
+        the new current phase.
+        """
         async with state.lock, async_session() as db:
+            phase_just_ended = state.phase
+            duration = state.phase_duration_seconds
             credited = 0
             if phase_just_ended is Phase.WORK:
                 credited = await svc.record_pomodoros_for_active_participants(
@@ -440,41 +512,96 @@ class RoomManager:
                     "credited_users": credited,
                 },
             )
-        await self._announce_phase(state, channel=channel)
 
-    async def _announce_phase(
-        self,
-        state: RoomState,
-        *,
-        channel: discord.abc.Messageable | None = None,
+        await self._post_phase_start_message(state, channel)
+
+    async def _post_phase_start_message(
+        self, state: RoomState, channel: discord.abc.Messageable
     ) -> None:
-        from src.ui.embeds import transition_message
+        """Post a fresh phase-transition message with a timer image.
 
-        target = channel
-        if target is None and state.message is not None:
-            target = state.message.channel
-        if target is None:
-            return
-        try:
-            await target.send(
-                transition_message(state.phase, state.completed_work_phases)
+        Strips buttons off the previous phase message so only the newest
+        one stays interactive.
+
+        Reads of ``state.phase`` / ``state.plan`` / ``state.completed_work_phases``
+        happen under ``state.lock`` so a concurrent ``skip`` or ``update_plan``
+        can't make the rendered image and the content-text disagree.
+        """
+        from src.ui.embeds import phase_announcement_content
+        from src.ui.panel_views import PhasePanelView
+        from src.ui.timer_image import render_timer_png
+
+        async with state.lock:
+            phase = state.phase
+            minutes = max(1, state.phase_duration_seconds // 60)
+            next_phase_minutes = max(
+                1,
+                state.plan.duration_of(_peek_next_phase(state)) // 60,
             )
-        except discord.HTTPException:
-            logger.warning("room.announce failed room_id=%s", state.room_id)
+            session_number = max(1, state.completed_work_phases + 1)
+            sessions_per_cycle = state.plan.long_break_every
+            previous_phase_message = state.last_phase_message
 
-    async def _render(self, state: RoomState) -> None:
-        from src.ui.embeds import room_embed
+        if previous_phase_message is not None:
+            # Message gone / permissions changed — not fatal.
+            with contextlib.suppress(discord.HTTPException):
+                await previous_phase_message.edit(view=None)
+
+        content = phase_announcement_content(
+            phase=phase,
+            phase_minutes=minutes,
+            next_phase_minutes=next_phase_minutes,
+        )
+        image = render_timer_png(
+            phase=phase,
+            minutes_remaining=minutes,
+            session_number=session_number,
+            sessions_per_cycle=sessions_per_cycle,
+        )
+        file = discord.File(image, filename="timer.png")
+        view = PhasePanelView(self, state.room_id)
+        try:
+            msg = await channel.send(content=content, file=file, view=view)
+            state.last_phase_message = msg
+        except discord.HTTPException:
+            logger.warning(
+                "phase.announce failed room_id=%s phase=%s",
+                state.room_id,
+                state.phase,
+            )
+
+    async def _render_control_panel(self, state: RoomState) -> None:
+        """Refresh the Control Panel message (participants, plan, status)."""
+        from src.ui.embeds import control_panel_embed
+        from src.ui.panel_views import ControlPanelView
 
         if state.message is None:
             return
         try:
-            await state.message.edit(embed=room_embed(state))
+            await state.message.edit(
+                embed=control_panel_embed(state),
+                view=ControlPanelView(
+                    self, state.room_id, has_started=state.has_started
+                ),
+            )
         except discord.HTTPException:
-            logger.warning("room.render failed room_id=%s", state.room_id)
+            logger.warning("control panel render failed room_id=%s", state.room_id)
 
     # Expose for tests
     def _register_for_tests(self, state: RoomState) -> None:
         self._rooms[state.room_id] = state
+
+
+def _peek_next_phase(state: RoomState) -> Phase:
+    """What phase comes after the current one (without mutating state)."""
+    from src.core.phase import next_phase
+
+    # Treat the current phase as just ended for the peek; WORK should count
+    # its completion so the long-break-every logic sees the right number.
+    completed = state.completed_work_phases + (1 if state.phase is Phase.WORK else 0)
+    return next_phase(
+        state.phase, completed_work_phases=completed, plan=state.plan
+    ).next_phase
 
 
 __all__ = ["OpResult", "ParticipantState", "RoomManager"]

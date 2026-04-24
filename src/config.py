@@ -9,7 +9,6 @@ from src.constants import (
     DEFAULT_LONG_BREAK_EVERY,
     DEFAULT_LONG_BREAK_SECONDS,
     DEFAULT_SHORT_BREAK_SECONDS,
-    DEFAULT_TICK_SECONDS,
     DEFAULT_WORK_SECONDS,
 )
 
@@ -34,7 +33,6 @@ class Settings(BaseSettings):
     pomo_short_break_seconds: int = DEFAULT_SHORT_BREAK_SECONDS
     pomo_long_break_seconds: int = DEFAULT_LONG_BREAK_SECONDS
     pomo_long_break_every: int = DEFAULT_LONG_BREAK_EVERY
-    pomo_tick_seconds: int = DEFAULT_TICK_SECONDS
 
     log_level: str = "INFO"
 
