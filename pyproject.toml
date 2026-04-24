@@ -1,0 +1,70 @@
+[project]
+name = "pomodoro-bot"
+version = "0.1.0"
+description = "Discord Pomodoro Bot"
+requires-python = "==3.12.*"
+dependencies = [
+    "discord.py~=2.6.0",
+    "SQLAlchemy~=2.0.0",
+    "asyncpg~=0.30.0",
+    "psycopg2-binary~=2.9.0",
+    "alembic~=1.14.0",
+    "pydantic~=2.10.0",
+    "pydantic-settings~=2.7.0",
+    "greenlet~=3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest~=8.0",
+    "pytest-asyncio~=0.23",
+    "pytest-cov~=5.0",
+    "ruff~=0.9.0",
+    "mypy~=1.15",
+    "faker~=37.0",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "C4", "UP", "ARG", "SIM", "ASYNC"]
+# B008: FastAPI/discord patterns commonly use function-call defaults.
+# ARG002: discord.py button callbacks always receive `interaction, button`.
+# ASYNC109: `timeout` kw on async helpers is a deliberate project convention.
+ignore = ["B008", "ARG002", "ASYNC109"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/conftest.py" = ["ARG001", "E402"]
+"tests/**/*.py" = ["ARG001"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+# SQLAlchemy's async engine binds its pool to the loop that created it, so
+# every test must share one loop — otherwise we hit "attached to a different
+# loop" errors when the engine is touched across tests.
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+
+[tool.coverage.run]
+source = ["src"]
+omit = ["src/__init__.py", "src/*/__init__.py"]
