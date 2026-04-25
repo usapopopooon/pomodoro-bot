@@ -366,8 +366,11 @@ async def test_reset_rejected_before_timer_started() -> None:
 @pytest.mark.asyncio
 async def test_skip_owner_advances_without_counting_completion() -> None:
     manager = _manager()
-    state, _ = await _spawn_room(manager, creator=1)
+    state, channel = await _spawn_room(manager, creator=1)
     await manager.join(state.room_id, 1)
+    # Ignore any sends that happened during setup — we only want to verify
+    # that skip itself posts a fresh phase message via channel.send.
+    channel.send.reset_mock()
     try:
         assert await manager.skip(state.room_id, 1) is OpResult.OK
         assert state.phase is Phase.SHORT_BREAK
@@ -375,6 +378,8 @@ async def test_skip_owner_advances_without_counting_completion() -> None:
         async with async_session() as db:
             pomos = (await db.execute(select(Pomodoro))).scalars().all()
             assert pomos == []
+        # Skip is a phase boundary → new phase message posted.
+        assert channel.send.await_count == 1
     finally:
         await manager.end(state.room_id, reason="test")
 
@@ -402,8 +407,9 @@ async def test_reset_owner_keeps_current_phase_and_rewinds_timer() -> None:
 @pytest.mark.asyncio
 async def test_update_plan_owner_updates_room_cycle_and_resets_round() -> None:
     manager = _manager()
-    state, _ = await _spawn_room(manager, creator=1)
+    state, channel = await _spawn_room(manager, creator=1)
     await manager.join(state.room_id, 1)
+    channel.send.reset_mock()
     try:
         before = datetime.now(UTC) - timedelta(seconds=1)
         state.phase = Phase.SHORT_BREAK
@@ -430,6 +436,8 @@ async def test_update_plan_owner_updates_room_cycle_and_resets_round() -> None:
             assert room.short_break_seconds == 7 * 60
             assert room.long_break_seconds == 20 * 60
             assert room.long_break_every == 3
+        # Update during running resets to WORK 1 → post fresh phase message.
+        assert channel.send.await_count == 1
     finally:
         await manager.end(state.room_id, reason="test")
 
@@ -438,9 +446,12 @@ async def test_update_plan_owner_updates_room_cycle_and_resets_round() -> None:
 async def test_update_plan_during_setup_does_not_touch_timing() -> None:
     """Before the timer starts, updating the plan persists the new values
     but must not mutate phase/completed counters (there's nothing to
-    "reset" in setup state)."""
+    "reset" in setup state) and must NOT post a phase message — no
+    timer is running yet.
+    """
     manager = _manager()
-    state, _ = await _spawn_room(manager, creator=1, running=False)
+    state, channel = await _spawn_room(manager, creator=1, running=False)
+    channel.send.reset_mock()
     try:
         original_start = state.phase_started_at
         plan = PhasePlan(30 * 60, 7 * 60, 20 * 60, 3)
@@ -448,6 +459,8 @@ async def test_update_plan_during_setup_does_not_touch_timing() -> None:
         assert state.plan == plan
         # Setup state: phase_started_at is unchanged.
         assert state.phase_started_at == original_start
+        # No phase message posted while in setup.
+        assert channel.send.await_count == 0
     finally:
         await manager.end(state.room_id, reason="test")
 

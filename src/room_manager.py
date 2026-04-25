@@ -538,8 +538,15 @@ class RoomManager:
         (which resets to WORK phase 1). Pause / reset edit the existing
         message in place via ``_refresh_phase_message`` instead.
 
-        The content is snapshotted under ``state.lock`` so concurrent
-        mutations don't cause a mid-build tear.
+        Ordering matters: we send the new message first and only strip
+        the old view after that succeeds. If the send fails (bot kicked,
+        permissions changed), the previous panel's buttons remain live so
+        the user isn't left with zero interactive controls.
+
+        Content is snapshotted under ``state.lock`` so concurrent mutations
+        can't tear the build, and ``last_phase_message`` is assigned back
+        under the lock too so a racing phase-end + skip don't leave the
+        pointer stale.
         """
         from src.ui.embeds import phase_content
         from src.ui.panel_views import PhasePanelView
@@ -552,21 +559,25 @@ class RoomManager:
             content = phase_content(state)
             previous_phase_message = state.last_phase_message
 
-        if previous_phase_message is not None:
-            # Message gone / permissions changed — not fatal.
-            with contextlib.suppress(discord.HTTPException):
-                await previous_phase_message.edit(view=None)
-
         view = PhasePanelView(self, state.room_id)
         try:
             msg = await channel.send(content=content, view=view)
-            state.last_phase_message = msg
         except discord.HTTPException:
             logger.warning(
                 "phase.announce failed room_id=%s phase=%s",
                 state.room_id,
                 state.phase,
             )
+            return
+
+        async with state.lock:
+            state.last_phase_message = msg
+
+        # Send succeeded — now it's safe to retire the old panel's buttons.
+        # Message gone / permissions changed — not fatal.
+        if previous_phase_message is not None:
+            with contextlib.suppress(discord.HTTPException):
+                await previous_phase_message.edit(view=None)
 
     async def _refresh_phase_message(self, state: RoomState) -> None:
         """Edit the current phase message in place — bar tick or pause flip.
