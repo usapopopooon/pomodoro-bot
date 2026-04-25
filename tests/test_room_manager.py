@@ -511,7 +511,7 @@ async def test_handle_phase_end_credits_each_active_participant() -> None:
     await manager.leave(state.room_id, 3)
 
     try:
-        await manager._handle_phase_end(state, channel)
+        await manager._handle_phase_end(state)
         assert state.phase is Phase.SHORT_BREAK
         assert state.completed_work_phases == 1
 

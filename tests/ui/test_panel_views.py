@@ -330,24 +330,3 @@ async def test_cycle_modal_rejects_non_numeric_input() -> None:
     )
     interaction.response.send_message.assert_called_once()
     assert "数字" in interaction.response.send_message.call_args.args[0]
-
-
-# ---------------------------------------------------------------------------
-# Timer image smoke test
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_timer_image_renders_valid_png() -> None:
-    from src.core.phase import Phase
-    from src.ui.timer_image import render_timer_png
-
-    buf = render_timer_png(
-        phase=Phase.WORK,
-        minutes_remaining=25,
-        session_number=2,
-        sessions_per_cycle=4,
-    )
-    data = buf.getvalue()
-    assert data.startswith(b"\x89PNG\r\n\x1a\n")
-    assert len(data) > 1000

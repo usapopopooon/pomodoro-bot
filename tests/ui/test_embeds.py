@@ -5,13 +5,18 @@ from uuid import uuid4
 
 import pytest
 
-from src.constants import PHASE_COLOR_ENDED
+from src.constants import (
+    PHASE_COLOR_ENDED,
+    PROGRESS_BAR_EMPTY,
+    PROGRESS_BAR_FILLED,
+    PROGRESS_BAR_LENGTH,
+)
 from src.core.phase import Phase, PhasePlan
 from src.core.room_state import RoomState
 from src.ui.embeds import (
     control_panel_embed,
     ended_embed,
-    phase_announcement_content,
+    phase_content,
     stats_embed,
 )
 
@@ -115,28 +120,52 @@ def test_ended_embed_uses_ended_color_and_reason() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Phase announcement content
+# Phase content (ASCII bar + Discord timestamp)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("phase", [Phase.WORK, Phase.SHORT_BREAK, Phase.LONG_BREAK])
-def test_phase_announcement_content_non_empty_for_every_phase(phase: Phase) -> None:
-    msg = phase_announcement_content(
-        phase=phase, phase_minutes=25, next_phase_minutes=5
-    )
+def test_phase_content_non_empty_for_every_phase(phase: Phase) -> None:
+    msg = phase_content(_state(phase=phase, has_started=True, elapsed_seconds=0))
     assert msg
-    # Phase label in some form appears in the message
-    assert phase.label_ja in msg or phase.name.replace("_", " ").lower() in msg.lower()
-    # Mentions both durations
-    assert "25" in msg
-    assert "5" in msg
+    assert phase.label_ja in msg
 
 
-def test_phase_announcement_content_mentions_next_phase_for_work() -> None:
-    msg = phase_announcement_content(
-        phase=Phase.WORK, phase_minutes=25, next_phase_minutes=5
-    )
-    assert "休憩" in msg
+def test_phase_content_bar_grows_with_elapsed_time() -> None:
+    early = phase_content(_state(elapsed_seconds=30, has_started=True))
+    late = phase_content(_state(elapsed_seconds=1200, has_started=True))
+    assert early.count(PROGRESS_BAR_FILLED) < late.count(PROGRESS_BAR_FILLED)
+
+
+def test_phase_content_bar_length_is_constant() -> None:
+    msg = phase_content(_state(elapsed_seconds=500, has_started=True))
+    # Count only bar chars inside the backticked line.
+    bar_chars = PROGRESS_BAR_FILLED + PROGRESS_BAR_EMPTY
+    only_bar = "".join(c for c in msg if c in bar_chars)
+    assert len(only_bar) == PROGRESS_BAR_LENGTH
+
+
+def test_phase_content_shows_mmss_clock() -> None:
+    msg = phase_content(_state(elapsed_seconds=315, has_started=True))
+    # 315 seconds of a 1500-second WORK → 05:15 / 25:00
+    assert "05:15" in msg
+    assert "25:00" in msg
+
+
+def test_phase_content_includes_discord_relative_timestamp_when_running() -> None:
+    msg = phase_content(_state(elapsed_seconds=30, has_started=True))
+    # <t:UNIX:R> for client-side live countdown
+    assert "<t:" in msg
+    assert ":R>" in msg
+
+
+def test_phase_content_drops_timestamp_and_marks_paused_when_paused() -> None:
+    msg = phase_content(_state(elapsed_seconds=30, has_started=True, paused=True))
+    # Paused badge
+    assert "一時停止" in msg
+    # Discord relative timestamp would keep ticking regardless of pause,
+    # so it's intentionally absent.
+    assert "<t:" not in msg
 
 
 # ---------------------------------------------------------------------------

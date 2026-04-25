@@ -6,4 +6,3 @@ alembic~=1.14.0
 pydantic~=2.10.0
 pydantic-settings~=2.7.0
 greenlet~=3.0
-Pillow~=11.0

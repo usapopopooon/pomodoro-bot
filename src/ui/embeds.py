@@ -4,19 +4,24 @@ Two surfaces:
 
 * **Control Panel** — persistent message that hosts configuration + roster.
   One per room, edited in place.
-* **Phase announcement** — transient per-phase text message (with a timer
-  image attached). A fresh message is posted each time the phase flips.
-
-The LionBot reference uses plain text content + an image attachment for the
-phase surface, and an embed-with-fields for the control surface; we match
-that split.
+* **Phase message** — transient per-phase text message with an ASCII
+  progress bar that ticks via periodic edits. A fresh message is posted
+  on phase boundaries (natural end, skip, plan-reset). Pause / reset /
+  periodic ticks edit the current message in place.
 """
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import discord
 
-from src.constants import PHASE_COLOR_ENDED
+from src.constants import (
+    PHASE_COLOR_ENDED,
+    PROGRESS_BAR_EMPTY,
+    PROGRESS_BAR_FILLED,
+    PROGRESS_BAR_LENGTH,
+)
 from src.core.phase import Phase
 from src.core.room_state import RoomState
 
@@ -48,12 +53,6 @@ def _format_participants(state: RoomState) -> str:
 
 
 def control_panel_embed(state: RoomState) -> discord.Embed:
-    """Config + roster embed shown at the Control Panel message.
-
-    While in *setup* state the primary affordance is the Start button; while
-    *running* the embed shows the current phase. The embed color switches
-    between phase-color-when-running and a neutral blue when in setup.
-    """
     color = state.phase.color if state.has_started else 0x7289DA
 
     if state.has_started:
@@ -91,40 +90,63 @@ def ended_embed(state: RoomState, reason: str) -> discord.Embed:
 
 
 # ---------------------------------------------------------------------------
-# Phase-transition message (content + attachment; no embed)
+# Phase message (content only — no embed, no attachment)
 # ---------------------------------------------------------------------------
 
 
-def phase_announcement_content(
-    *,
-    phase: Phase,
-    phase_minutes: int,
-    next_phase_minutes: int,
-) -> str:
-    """Plain-text content for the phase-transition message.
+_PHASE_ICON: dict[Phase, str] = {
+    Phase.WORK: "🍅",
+    Phase.SHORT_BREAK: "☕",
+    Phase.LONG_BREAK: "🛌",
+}
 
-    Matches LionBot's format ``"... is now in FOCUS! BREAK starts 25分後"``.
-    The image attachment carries the visual; the text explains what happened
-    in terms accessible to screen readers and inline previews.
-    """
-    if phase is Phase.WORK:
-        return (
-            f"🍅 **{phase.label_ja}** フェーズ開始! "
-            f"({phase_minutes} 分間集中 → **休憩 {next_phase_minutes} 分**)"
-        )
-    if phase is Phase.SHORT_BREAK:
-        return (
-            f"☕ **{phase.label_ja}** です。お疲れさま! "
-            f"({phase_minutes} 分 → 次は **作業 {next_phase_minutes} 分**)"
-        )
-    return (
-        f"🛌 **{phase.label_ja}** です。しっかり休んでください! "
-        f"({phase_minutes} 分 → 次は **作業 {next_phase_minutes} 分**)"
+
+def _format_clock(seconds: int) -> str:
+    seconds = max(0, seconds)
+    return f"{seconds // 60:02d}:{seconds % 60:02d}"
+
+
+def _progress_bar(ratio: float) -> str:
+    ratio = max(0.0, min(1.0, ratio))
+    filled = round(ratio * PROGRESS_BAR_LENGTH)
+    return PROGRESS_BAR_FILLED * filled + PROGRESS_BAR_EMPTY * (
+        PROGRESS_BAR_LENGTH - filled
     )
 
 
+def phase_content(state: RoomState, *, now: datetime | None = None) -> str:
+    """Two-line content for the phase message.
+
+    Line 1: phase label + pause marker (if paused).
+    Line 2: monospace ASCII progress bar with elapsed/total and a Discord
+    relative timestamp (``<t:UNIX:R>``) that ticks on the client side.
+    The timestamp is omitted while paused since a future instant would
+    keep counting down regardless of the pause state.
+    """
+    now = now or datetime.now(UTC)
+    duration = state.phase_duration_seconds
+    elapsed = int(max(0, state.elapsed(now).total_seconds()))
+    remaining = max(0, duration - elapsed)
+    ratio = (elapsed / duration) if duration else 0.0
+
+    bar = _progress_bar(ratio)
+    icon = _PHASE_ICON[state.phase]
+    label = state.phase.label_ja
+
+    header = f"{icon} **{label}**"
+    if state.is_paused:
+        header += " ⏸ **一時停止中**"
+
+    bar_line = f"`{bar} {_format_clock(elapsed)} / {_format_clock(duration)}`"
+    if not state.is_paused:
+        end_unix = int((now + timedelta(seconds=remaining)).timestamp())
+        bar_line += f" — 終了 <t:{end_unix}:R>"
+
+    return f"{header}\n{bar_line}"
+
+
 # ---------------------------------------------------------------------------
-# Stats (kept from previous revision)
+# Stats
 # ---------------------------------------------------------------------------
 
 

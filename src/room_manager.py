@@ -16,6 +16,12 @@ from src.services import room_service as svc
 logger = logging.getLogger(__name__)
 
 
+# How often the phase message is re-rendered to advance the ASCII bar.
+# At 30s, a 25-min WORK phase gets ~50 discrete updates (2% per tick) —
+# visible motion without touching Discord's 5-edit/5-sec rate limit.
+REFRESH_SECONDS = 30
+
+
 class OpResult(StrEnum):
     """Why a button action was accepted / rejected.
 
@@ -144,9 +150,8 @@ class RoomManager:
             # "開始中" (disabled) and the embed status line changes.
             await self._render_control_panel(state)
 
-        channel = state.message.channel
         state.task_handle = asyncio.create_task(
-            self._run_phase_loop(state, channel),
+            self._run_phase_loop(state),
             name=f"pomo-phases-{room_id}",
         )
         return OpResult.OK
@@ -350,7 +355,13 @@ class RoomManager:
             # it before the loop has been started (setup state).
             if state.has_started:
                 state.wake_event.set()
-            return OpResult.OK
+
+        # During running, the plan update resets to WORK phase 1 — that's
+        # a semantic phase boundary, so post a fresh phase message (history
+        # in the channel shows the restart) instead of editing in place.
+        if state.has_started:
+            await self._post_phase_start_message(state)
+        return OpResult.OK
 
     # ------------------------------------------------------------------
     # Owner-only ops (only meaningful while running)
@@ -374,6 +385,9 @@ class RoomManager:
                 await svc.record_event(db, room_id=room_id, event_type=event_type)
             await self._render_control_panel(state)
             state.wake_event.set()
+        # Pause / resume is an in-place status change; edit the phase
+        # message so the ⏸ marker appears or disappears right away.
+        await self._refresh_phase_message(state)
         return OpResult.OK
 
     async def skip(self, room_id: UUID, user_id: int) -> OpResult:
@@ -395,7 +409,9 @@ class RoomManager:
                     payload={"from": previous, "to": state.phase},
                 )
             state.wake_event.set()
-        # Posting the new phase message happens in the loop after wake.
+        # Skip is a phase boundary — post a new phase message so the
+        # channel history shows the transition.
+        await self._post_phase_start_message(state)
         return OpResult.OK
 
     async def reset(self, room_id: UUID, user_id: int) -> OpResult:
@@ -412,6 +428,8 @@ class RoomManager:
                 await svc.record_event(db, room_id=room_id, event_type="reset")
             await self._render_control_panel(state)
             state.wake_event.set()
+        # Reset keeps the same phase; edit the bar back to 0% in place.
+        await self._refresh_phase_message(state)
         return OpResult.OK
 
     async def end_by_owner(self, room_id: UUID, user_id: int) -> OpResult:
@@ -438,40 +456,42 @@ class RoomManager:
         for other in targets:
             await self.leave(other.room_id, user_id)
 
-    async def _run_phase_loop(
-        self, state: RoomState, channel: discord.abc.Messageable
-    ) -> None:
-        """Post phase announcements on boundaries; sleep between them.
+    async def _run_phase_loop(self, state: RoomState) -> None:
+        """Drive the phase message: post at phase boundaries, refresh the
+        progress bar every ``REFRESH_SECONDS`` until the phase ends.
 
-        The loop sleeps for exactly the current phase's remaining time,
-        but ``state.wake_event`` can wake it early for pause/skip/reset/
-        plan-update. After waking, the loop re-evaluates the current
-        phase state and recomputes its next sleep.
+        The loop sleeps for ``min(remaining, REFRESH_SECONDS)`` and wakes
+        early via ``state.wake_event`` on pause / skip / reset / plan
+        update. Those user actions are responsible for their own message
+        refresh outside the loop; the loop just handles periodic ticks
+        and natural phase ends.
         """
         try:
             # Kick off with the initial phase announcement.
-            await self._post_phase_start_message(state, channel)
+            await self._post_phase_start_message(state)
 
             while True:
                 if state.is_paused:
+                    # Wait indefinitely; resume / skip / etc. set wake_event.
                     await state.wake_event.wait()
                     state.wake_event.clear()
                     continue
 
                 remaining = state.remaining().total_seconds()
                 if remaining <= 0:
-                    await self._handle_phase_end(state, channel)
+                    await self._handle_phase_end(state)
                     state.wake_event.clear()
                     continue
 
+                sleep_for = min(remaining, REFRESH_SECONDS)
                 try:
-                    await asyncio.wait_for(state.wake_event.wait(), timeout=remaining)
+                    await asyncio.wait_for(state.wake_event.wait(), timeout=sleep_for)
                     state.wake_event.clear()
-                    # Something changed (pause/skip/reset/plan) — loop and
-                    # re-evaluate.
+                    # User action — the handler already refreshed or posted
+                    # a new message. Loop and re-evaluate.
                 except TimeoutError:
-                    # Natural phase end.
-                    await self._handle_phase_end(state, channel)
+                    # Periodic tick: just edit the bar in place.
+                    await self._refresh_phase_message(state)
         except asyncio.CancelledError:
             logger.debug("phase loop cancelled room_id=%s", state.room_id)
             raise
@@ -479,16 +499,12 @@ class RoomManager:
             logger.exception("phase loop errored room_id=%s", state.room_id)
             await self.end(state.room_id, reason="error")
 
-    async def _handle_phase_end(
-        self, state: RoomState, channel: discord.abc.Messageable
-    ) -> None:
+    async def _handle_phase_end(self, state: RoomState) -> None:
         """Handle the natural end of the current phase.
 
         ``phase_just_ended`` is read inside the lock so a concurrent ``skip``
         that advanced the phase before we could acquire the lock doesn't
-        make us credit the wrong phase or double-advance. In that case the
-        phase has already changed and ``advance_phase`` correctly applies
-        the new current phase.
+        make us credit the wrong phase or double-advance.
         """
         async with state.lock, async_session() as db:
             phase_just_ended = state.phase
@@ -513,33 +529,27 @@ class RoomManager:
                 },
             )
 
-        await self._post_phase_start_message(state, channel)
+        await self._post_phase_start_message(state)
 
-    async def _post_phase_start_message(
-        self, state: RoomState, channel: discord.abc.Messageable
-    ) -> None:
-        """Post a fresh phase-transition message with a timer image.
+    async def _post_phase_start_message(self, state: RoomState) -> None:
+        """Post a new phase message and strip buttons off the old one.
 
-        Strips buttons off the previous phase message so only the newest
-        one stays interactive.
+        Called at phase boundaries: natural end, skip, and plan-update
+        (which resets to WORK phase 1). Pause / reset edit the existing
+        message in place via ``_refresh_phase_message`` instead.
 
-        Reads of ``state.phase`` / ``state.plan`` / ``state.completed_work_phases``
-        happen under ``state.lock`` so a concurrent ``skip`` or ``update_plan``
-        can't make the rendered image and the content-text disagree.
+        The content is snapshotted under ``state.lock`` so concurrent
+        mutations don't cause a mid-build tear.
         """
-        from src.ui.embeds import phase_announcement_content
+        from src.ui.embeds import phase_content
         from src.ui.panel_views import PhasePanelView
-        from src.ui.timer_image import render_timer_png
+
+        channel = state.message.channel if state.message is not None else None
+        if channel is None:
+            return
 
         async with state.lock:
-            phase = state.phase
-            minutes = max(1, state.phase_duration_seconds // 60)
-            next_phase_minutes = max(
-                1,
-                state.plan.duration_of(_peek_next_phase(state)) // 60,
-            )
-            session_number = max(1, state.completed_work_phases + 1)
-            sessions_per_cycle = state.plan.long_break_every
+            content = phase_content(state)
             previous_phase_message = state.last_phase_message
 
         if previous_phase_message is not None:
@@ -547,21 +557,9 @@ class RoomManager:
             with contextlib.suppress(discord.HTTPException):
                 await previous_phase_message.edit(view=None)
 
-        content = phase_announcement_content(
-            phase=phase,
-            phase_minutes=minutes,
-            next_phase_minutes=next_phase_minutes,
-        )
-        image = render_timer_png(
-            phase=phase,
-            minutes_remaining=minutes,
-            session_number=session_number,
-            sessions_per_cycle=sessions_per_cycle,
-        )
-        file = discord.File(image, filename="timer.png")
         view = PhasePanelView(self, state.room_id)
         try:
-            msg = await channel.send(content=content, file=file, view=view)
+            msg = await channel.send(content=content, view=view)
             state.last_phase_message = msg
         except discord.HTTPException:
             logger.warning(
@@ -569,6 +567,25 @@ class RoomManager:
                 state.room_id,
                 state.phase,
             )
+
+    async def _refresh_phase_message(self, state: RoomState) -> None:
+        """Edit the current phase message in place — bar tick or pause flip.
+
+        Used for periodic refreshes (every ``REFRESH_SECONDS``) and for
+        pause/reset, which don't need a new message in the channel
+        history. If there's no current phase message yet (pre-start) or
+        the edit fails, we just log and move on.
+        """
+        from src.ui.embeds import phase_content
+
+        if state.last_phase_message is None:
+            return
+        async with state.lock:
+            content = phase_content(state)
+        try:
+            await state.last_phase_message.edit(content=content)
+        except discord.HTTPException:
+            logger.warning("phase.refresh failed room_id=%s", state.room_id)
 
     async def _render_control_panel(self, state: RoomState) -> None:
         """Refresh the Control Panel message (participants, plan, status)."""
@@ -590,18 +607,6 @@ class RoomManager:
     # Expose for tests
     def _register_for_tests(self, state: RoomState) -> None:
         self._rooms[state.room_id] = state
-
-
-def _peek_next_phase(state: RoomState) -> Phase:
-    """What phase comes after the current one (without mutating state)."""
-    from src.core.phase import next_phase
-
-    # Treat the current phase as just ended for the peek; WORK should count
-    # its completion so the long-break-every logic sees the right number.
-    completed = state.completed_work_phases + (1 if state.phase is Phase.WORK else 0)
-    return next_phase(
-        state.phase, completed_work_phases=completed, plan=state.plan
-    ).next_phase
 
 
 __all__ = ["OpResult", "ParticipantState", "RoomManager"]
