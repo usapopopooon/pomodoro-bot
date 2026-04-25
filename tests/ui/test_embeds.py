@@ -16,6 +16,7 @@ from src.core.room_state import RoomState
 from src.ui.embeds import (
     control_panel_embed,
     ended_embed,
+    freeze_phase_content,
     phase_content,
     stats_embed,
 )
@@ -209,6 +210,27 @@ def test_phase_content_omits_mentions_when_notify_disabled_for_phase() -> None:
 def test_phase_content_omits_mentions_when_no_participants() -> None:
     msg = phase_content(_state(participants={}, has_started=True))
     assert "||" not in msg
+
+
+# ---------------------------------------------------------------------------
+# freeze_phase_content — strips live ``<t:...:R>`` so old messages stop ticking
+# ---------------------------------------------------------------------------
+
+
+def test_freeze_phase_content_removes_live_timestamp_line() -> None:
+    msg = phase_content(_state(elapsed_seconds=30, has_started=True))
+    assert "<t:" in msg  # sanity: running phase has the live timestamp
+    frozen = freeze_phase_content(msg)
+    assert "<t:" not in frozen
+    # The rest of the message survives so history is still readable.
+    assert Phase.WORK.label_ja in frozen
+    assert PROGRESS_BAR_FILLED in frozen or PROGRESS_BAR_EMPTY in frozen
+
+
+def test_freeze_phase_content_is_noop_when_no_timestamp() -> None:
+    msg = phase_content(_state(elapsed_seconds=1500, has_started=True))
+    assert "<t:" not in msg
+    assert freeze_phase_content(msg) == msg
 
 
 # ---------------------------------------------------------------------------

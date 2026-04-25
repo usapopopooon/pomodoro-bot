@@ -199,10 +199,16 @@ class RoomManager:
                 logger.warning("room.end edit failed room_id=%s", room_id)
 
         # Strip buttons off the most recent phase message too so users
-        # can't click stale controls.
+        # can't click stale controls, and freeze the live timestamp so
+        # the message stops ticking "X 分前" after the room is done.
         if state.last_phase_message is not None:
+            from src.ui.embeds import freeze_phase_content
+
             with contextlib.suppress(discord.HTTPException):
-                await state.last_phase_message.edit(view=None)
+                await state.last_phase_message.edit(
+                    content=freeze_phase_content(state.last_phase_message.content),
+                    view=None,
+                )
 
         logger.info("room.ended room_id=%s reason=%s", room_id, reason)
         return state
@@ -608,11 +614,18 @@ class RoomManager:
         async with state.lock:
             state.last_phase_message = msg
 
-        # Send succeeded — now it's safe to retire the old panel's buttons.
-        # Message gone / permissions changed — not fatal.
+        # Send succeeded — now it's safe to retire the old panel. Also
+        # strip the live ``<t:...:R>`` line: without this, Discord keeps
+        # re-rendering the old message as ``"X 分前"`` forever even after
+        # the phase has ended. Message gone / permissions changed — not fatal.
         if previous_phase_message is not None:
+            from src.ui.embeds import freeze_phase_content
+
             with contextlib.suppress(discord.HTTPException):
-                await previous_phase_message.edit(view=None)
+                await previous_phase_message.edit(
+                    content=freeze_phase_content(previous_phase_message.content),
+                    view=None,
+                )
 
     async def _refresh_phase_message(self, state: RoomState) -> None:
         """Edit the current phase message in place — bar tick or pause flip.

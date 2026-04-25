@@ -19,7 +19,7 @@ from uuid import UUID
 import discord
 
 from src.core.phase import Phase, PhasePlan
-from src.ui.embeds import stats_embed
+from src.ui.embeds import help_embed, stats_embed
 
 if TYPE_CHECKING:
     from src.core.room_state import RoomState
@@ -203,7 +203,7 @@ class ControlPanelView(discord.ui.View):
     """Persistent control panel attached to the Control Panel message.
 
     Layout:
-        Row 0 (everyone):  [🙋 参加] [🚪 退出] [✍️ タスク] [📊 統計]
+        Row 0 (everyone):  [🙋 参加] [🚪 退出] [✍️ タスク] [📊 統計] [❓ 使い方]
         Row 1 (owner):     [▶️ 開始] [⚙️ 時間設定] [🔔 通知] [🛑 終了]
 
     ``has_started`` only affects the Start button's enabled state — the
@@ -311,6 +311,20 @@ class ControlPanelView(discord.ui.View):
             ),
             ephemeral=True,
         )
+
+    @discord.ui.button(
+        label="使い方",
+        emoji="❓",
+        style=discord.ButtonStyle.secondary,
+        custom_id="cp:help",
+        row=0,
+    )
+    async def help_button(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button[ControlPanelView],
+    ) -> None:
+        await interaction.response.send_message(embed=help_embed(), ephemeral=True)
 
     # Row 1 (owner) ----------------------------------------------------
 

@@ -1,6 +1,8 @@
 from src.ui.embeds import (
     control_panel_embed,
     ended_embed,
+    freeze_phase_content,
+    help_embed,
     phase_content,
     stats_embed,
 )
@@ -24,6 +26,8 @@ __all__ = [
     "TaskModal",
     "control_panel_embed",
     "ended_embed",
+    "freeze_phase_content",
+    "help_embed",
     "phase_content",
     "stats_embed",
 ]

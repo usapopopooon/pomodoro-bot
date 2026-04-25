@@ -148,15 +148,15 @@ def _mention_prefix(state: RoomState) -> str:
 def phase_content(state: RoomState, *, now: datetime | None = None) -> str:
     """Phase message content.
 
-    Line 1 (optional): spoiler-wrapped participant mentions when this phase
-    has notifications enabled — fires the ping, hides the names.
-    Line 2: phase label + pause marker (if paused).
-    Line 3: monospace ASCII progress bar with minute-granular elapsed/total
-    (``5分 / 25分``) and a Discord relative timestamp (``<t:UNIX:R>``) that
-    ticks on the client side. The timestamp is omitted while paused since
-    a future instant would keep counting down regardless of pause state,
-    and also once the phase is complete — otherwise it would drift into
-    "X minutes ago" after the bar fills up.
+    Layout (one item per line so narrow mobile viewports don't wrap):
+        [spoiler mentions]          ← optional, only when this phase's
+                                      notification flag is on
+        {icon} **{label}**          ← phase header, + pause marker
+        `{bar} {elapsed} / {total}` ← fixed-width monospace progress
+        終了 <t:{unix}:R>            ← client-side relative countdown;
+                                      omitted while paused (would tick
+                                      regardless) or once the phase is
+                                      done (would drift to "X ago")
     """
     now = now or datetime.now(UTC)
     duration = state.phase_duration_seconds
@@ -173,11 +173,12 @@ def phase_content(state: RoomState, *, now: datetime | None = None) -> str:
         header += " ⏸ **一時停止中**"
 
     bar_line = f"`{bar} {_format_minutes(elapsed)} / {_format_minutes(duration)}`"
-    if not state.is_paused and remaining > 0:
-        end_unix = int((now + timedelta(seconds=remaining)).timestamp())
-        bar_line += f" — 終了 <t:{end_unix}:R>"
 
     lines = [header, bar_line]
+    if not state.is_paused and remaining > 0:
+        end_unix = int((now + timedelta(seconds=remaining)).timestamp())
+        lines.append(f"終了 <t:{end_unix}:R>")
+
     prefix = _mention_prefix(state)
     if prefix:
         lines.insert(0, prefix)
@@ -187,6 +188,61 @@ def phase_content(state: RoomState, *, now: datetime | None = None) -> str:
 # ---------------------------------------------------------------------------
 # Stats
 # ---------------------------------------------------------------------------
+
+
+def freeze_phase_content(content: str) -> str:
+    """Strip the live ``終了 <t:...:R>`` line from a past phase message.
+
+    Discord re-renders ``<t:UNIX:R>`` on every view, which means a finished
+    phase keeps ticking as ``"X 分前"`` forever. When we transition away
+    from a phase (or end the room) we rewrite the old message without that
+    line so it freezes as historical text.
+    """
+    return "\n".join(
+        line for line in content.split("\n") if not line.startswith("終了 <t:")
+    )
+
+
+def help_embed() -> discord.Embed:
+    """Ephemeral cheat-sheet for every button on the panel."""
+    embed = discord.Embed(
+        title="❓ ポモドーロの使い方",
+        description=(
+            "`/pomo` でこのパネルが出ます。既にチャンネルにパネルがある場合は"
+            "新しいものに置き換わります。"
+        ),
+        color=0x7289DA,
+    )
+    embed.add_field(
+        name="🙋 誰でも",
+        value=(
+            "🙋 **参加** — このポモドーロに参加\n"
+            "🚪 **退出** — 抜ける(最後の 1 人が抜けると自動終了)\n"
+            "✍️ **タスク** — 自分の今のタスクを設定\n"
+            "📊 **統計** — 今日/今週/累計の完了数を表示"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="👑 オーナーのみ",
+        value=(
+            "▶️ **開始** — タイマーをスタート\n"
+            "⚙️ **時間設定** — 作業/短休憩/長休憩/長休憩頻度を変更\n"
+            "🔔 **通知** — 各フェーズ開始時にスポイラー付きメンションを"
+            "送るかどうかをフェーズ別に切替\n"
+            "🛑 **終了** — ポモドーロを終了"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="⏰ フェーズ開始メッセージ",
+        value=(
+            "✅ **参加** / **操作**(オーナー用 一時停止・スキップ・リセット・"
+            "時間設定)/ 🛑 **終了**"
+        ),
+        inline=False,
+    )
+    return embed
 
 
 def stats_embed(

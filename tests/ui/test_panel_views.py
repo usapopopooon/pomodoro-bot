@@ -6,11 +6,13 @@ from uuid import UUID, uuid4
 import discord
 import pytest
 
-from src.core.phase import PhasePlan
+from src.core.phase import Phase, PhasePlan
+from src.core.room_state import RoomState
 from src.room_manager import OpResult
 from src.ui.panel_views import (
     ControlPanelView,
     CycleSettingsModal,
+    NotificationSettingsView,
     PhasePanelView,
     TaskModal,
 )
@@ -93,7 +95,7 @@ async def test_task_modal_prefill_none_leaves_default_unset() -> None:
 
 
 @pytest.mark.asyncio
-async def test_control_panel_has_eight_buttons_and_room_specific_custom_ids() -> None:
+async def test_control_panel_has_nine_buttons_and_room_specific_custom_ids() -> None:
     r1 = uuid4()
     r2 = uuid4()
     v1 = ControlPanelView(_manager_stub(), r1)
@@ -101,12 +103,33 @@ async def test_control_panel_has_eight_buttons_and_room_specific_custom_ids() ->
 
     ids_v1 = {c.custom_id for c in v1.children if isinstance(c, discord.ui.Button)}
     ids_v2 = {c.custom_id for c in v2.children if isinstance(c, discord.ui.Button)}
-    # join/leave/task/stats + start/cycle/notify/end
-    assert len(ids_v1) == 8
-    assert len(ids_v2) == 8
+    # join/leave/task/stats/help + start/cycle/notify/end
+    assert len(ids_v1) == 9
+    assert len(ids_v2) == 9
     assert ids_v1.isdisjoint(ids_v2)
     assert all(cid.endswith(str(r1)) for cid in ids_v1 if cid)
     assert all(cid.endswith(str(r2)) for cid in ids_v2 if cid)
+
+
+@pytest.mark.asyncio
+async def test_help_button_sends_ephemeral_usage_embed() -> None:
+    room_id = uuid4()
+    view = ControlPanelView(_manager_stub(), room_id)
+    interaction = _fake_interaction(user_id=42)
+
+    help_btn = _find_cp(view, room_id=room_id, action="help")
+    await help_btn.callback(interaction)
+
+    interaction.response.send_message.assert_awaited_once()
+    kwargs = interaction.response.send_message.await_args.kwargs
+    assert kwargs["ephemeral"] is True
+    embed = kwargs["embed"]
+    assert "使い方" in (embed.title or "")
+    # Every button family should appear in the cheat-sheet so nothing is a
+    # mystery to a first-time user.
+    joined = "\n".join(f.value for f in embed.fields)
+    for label in ("参加", "退出", "タスク", "統計", "開始", "時間設定", "通知", "終了"):
+        assert label in joined
 
 
 @pytest.mark.asyncio
@@ -331,3 +354,85 @@ async def test_cycle_modal_rejects_non_numeric_input() -> None:
     )
     interaction.response.send_message.assert_called_once()
     assert "数字" in interaction.response.send_message.call_args.args[0]
+
+
+# ---------------------------------------------------------------------------
+# Notification settings view
+# ---------------------------------------------------------------------------
+
+
+def _state_for_notify(*, work: bool, short_: bool, long_: bool) -> RoomState:
+    state = RoomState(
+        room_id=uuid4(),
+        guild_id=None,
+        channel_id=1,
+        created_by=1,
+        plan=PhasePlan(1500, 300, 900, 4),
+    )
+    state.notify_work = work
+    state.notify_short_break = short_
+    state.notify_long_break = long_
+    return state
+
+
+@pytest.mark.asyncio
+async def test_notification_settings_labels_reflect_current_state() -> None:
+    state = _state_for_notify(work=True, short_=False, long_=True)
+    view = NotificationSettingsView(_manager_stub(), uuid4(), state)
+
+    expected = {
+        "ns:work": ("作業: ON", "🔔", discord.ButtonStyle.success),
+        "ns:short": ("短休憩: OFF", "🔕", discord.ButtonStyle.secondary),
+        "ns:long": ("長休憩: ON", "🔔", discord.ButtonStyle.success),
+    }
+    seen: dict[str, tuple[str, str, discord.ButtonStyle]] = {}
+    for child in view.children:
+        if isinstance(child, discord.ui.Button) and child.custom_id in expected:
+            assert child.emoji is not None
+            seen[child.custom_id] = (
+                child.label or "",
+                child.emoji.name,
+                child.style,
+            )
+    assert seen == expected
+
+
+@pytest.mark.asyncio
+async def test_notification_toggle_flips_state_and_updates_view() -> None:
+    state = _state_for_notify(work=True, short_=True, long_=True)
+
+    manager = MagicMock()
+    manager.get.return_value = state
+    manager.set_notify = AsyncMock(return_value=OpResult.OK)
+    # The view re-reads state via ``manager.get`` after toggling, so reflect
+    # the would-be flag flip in the stub for the second read.
+    seq = [state]
+
+    def _flip(*_: object, **kwargs: object) -> OpResult:
+        phase = kwargs["phase"]
+        if phase is Phase.WORK:
+            state.notify_work = bool(kwargs["enabled"])
+        return OpResult.OK
+
+    manager.set_notify.side_effect = _flip
+    manager.get.side_effect = lambda _rid: seq[0]
+
+    view = NotificationSettingsView(manager, uuid4(), state)
+    interaction = MagicMock(spec=discord.Interaction)
+    interaction.user = MagicMock()
+    interaction.user.id = 1
+    interaction.response = MagicMock()
+    interaction.response.edit_message = AsyncMock()
+    interaction.response.is_done.return_value = False
+
+    await view._toggle(interaction, Phase.WORK)
+
+    manager.set_notify.assert_awaited_once()
+    kwargs = manager.set_notify.await_args.kwargs
+    assert kwargs["phase"] is Phase.WORK
+    assert kwargs["enabled"] is False  # was True → toggle off
+    interaction.response.edit_message.assert_awaited_once()
+
+    work_btn = _find_button(view, custom_id="ns:work")
+    assert work_btn.label == "作業: OFF"
+    assert work_btn.style is discord.ButtonStyle.secondary
