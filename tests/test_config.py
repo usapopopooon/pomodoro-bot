@@ -46,3 +46,29 @@ def test_missing_token_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     with pytest.raises(ValidationError):
         Settings(discord_token="")
+
+
+def test_refresh_minutes_defaults_to_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DISCORD_TOKEN", "t")
+    monkeypatch.delenv("POMO_REFRESH_MINUTES", raising=False)
+    s = Settings()
+    assert s.pomo_refresh_minutes == 1
+
+
+def test_refresh_minutes_parses_int(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DISCORD_TOKEN", "t")
+    monkeypatch.setenv("POMO_REFRESH_MINUTES", "3")
+    s = Settings()
+    assert s.pomo_refresh_minutes == 3
+
+
+def test_refresh_minutes_clamped_to_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Zero / negative would make the phase loop spin — clamp up to 1.
+    monkeypatch.setenv("DISCORD_TOKEN", "t")
+    monkeypatch.setenv("POMO_REFRESH_MINUTES", "0")
+    s = Settings()
+    assert s.pomo_refresh_minutes == 1

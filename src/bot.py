@@ -52,6 +52,7 @@ class PomodoroBot(commands.Bot):
         )
         self.room_manager: RoomManager = RoomManager(
             default_plan=_build_default_plan(),
+            refresh_seconds=settings.pomo_refresh_minutes * 60,
         )
 
     async def setup_hook(self) -> None:

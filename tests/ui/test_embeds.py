@@ -145,11 +145,17 @@ def test_phase_content_bar_length_is_constant() -> None:
     assert len(only_bar) == PROGRESS_BAR_LENGTH
 
 
-def test_phase_content_shows_mmss_clock() -> None:
+def test_phase_content_shows_minute_clock() -> None:
+    # 315 seconds into a 1500-second WORK → floored to 5分 / 25分.
     msg = phase_content(_state(elapsed_seconds=315, has_started=True))
-    # 315 seconds of a 1500-second WORK → 05:15 / 25:00
-    assert "05:15" in msg
-    assert "25:00" in msg
+    assert "5分 / 25分" in msg
+
+
+def test_phase_content_floors_sub_minute_elapsed_to_zero() -> None:
+    # 45 seconds in → still "0分" until we cross the 1-minute mark, so the
+    # clock and the per-minute refresh cadence stay in lockstep.
+    msg = phase_content(_state(elapsed_seconds=45, has_started=True))
+    assert "0分 / 25分" in msg
 
 
 def test_phase_content_includes_discord_relative_timestamp_when_running() -> None:

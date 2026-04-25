@@ -15,3 +15,9 @@ DEFAULT_WORK_SECONDS = 25 * 60
 DEFAULT_SHORT_BREAK_SECONDS = 5 * 60
 DEFAULT_LONG_BREAK_SECONDS = 15 * 60
 DEFAULT_LONG_BREAK_EVERY = 4
+
+# How often the phase message is re-rendered while a phase is running.
+# Expressed in whole minutes to match the minute-granular clock in the
+# progress bar ("5分 / 25分") — sub-minute refreshes would update the bar
+# visually but not the text, which just feels inconsistent.
+DEFAULT_REFRESH_MINUTES = 1

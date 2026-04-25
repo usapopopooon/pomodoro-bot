@@ -16,12 +16,6 @@ from src.services import room_service as svc
 logger = logging.getLogger(__name__)
 
 
-# How often the phase message is re-rendered to advance the ASCII bar.
-# At 30s, a 25-min WORK phase gets ~50 discrete updates (2% per tick) —
-# visible motion without touching Discord's 5-edit/5-sec rate limit.
-REFRESH_SECONDS = 30
-
-
 class OpResult(StrEnum):
     """Why a button action was accepted / rejected.
 
@@ -56,9 +50,18 @@ class RoomManager:
     resets, or updates the plan. No 10-second ticking.
     """
 
-    def __init__(self, *, default_plan: PhasePlan) -> None:
+    def __init__(
+        self,
+        *,
+        default_plan: PhasePlan,
+        refresh_seconds: int = 60,
+    ) -> None:
         self._rooms: dict[UUID, RoomState] = {}
         self._default_plan = default_plan
+        # How long to sleep between phase-message refreshes. Defaults to
+        # one minute — matches the minute-granular "N分 / M分" clock in
+        # the ASCII bar, so text and bar advance in step.
+        self._refresh_seconds = max(1, refresh_seconds)
         self._registry_lock = asyncio.Lock()
 
     @property
@@ -458,9 +461,9 @@ class RoomManager:
 
     async def _run_phase_loop(self, state: RoomState) -> None:
         """Drive the phase message: post at phase boundaries, refresh the
-        progress bar every ``REFRESH_SECONDS`` until the phase ends.
+        progress bar every ``self._refresh_seconds`` until the phase ends.
 
-        The loop sleeps for ``min(remaining, REFRESH_SECONDS)`` and wakes
+        The loop sleeps for ``min(remaining, refresh_seconds)`` and wakes
         early via ``state.wake_event`` on pause / skip / reset / plan
         update. Those user actions are responsible for their own message
         refresh outside the loop; the loop just handles periodic ticks
@@ -483,7 +486,7 @@ class RoomManager:
                     state.wake_event.clear()
                     continue
 
-                sleep_for = min(remaining, REFRESH_SECONDS)
+                sleep_for = min(remaining, self._refresh_seconds)
                 try:
                     await asyncio.wait_for(state.wake_event.wait(), timeout=sleep_for)
                     state.wake_event.clear()
@@ -582,7 +585,7 @@ class RoomManager:
     async def _refresh_phase_message(self, state: RoomState) -> None:
         """Edit the current phase message in place — bar tick or pause flip.
 
-        Used for periodic refreshes (every ``REFRESH_SECONDS``) and for
+        Used for periodic refreshes (every ``refresh_seconds``) and for
         pause/reset, which don't need a new message in the channel
         history. If there's no current phase message yet (pre-start) or
         the edit fails, we just log and move on.

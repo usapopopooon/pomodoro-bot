@@ -101,9 +101,14 @@ _PHASE_ICON: dict[Phase, str] = {
 }
 
 
-def _format_clock(seconds: int) -> str:
-    seconds = max(0, seconds)
-    return f"{seconds // 60:02d}:{seconds % 60:02d}"
+def _format_minutes(seconds: int) -> str:
+    """Minute-granular clock: ``5分`` — matches the 1-minute refresh cadence.
+
+    Sub-minute precision would only advance the bar (not the text) between
+    refreshes, which reads inconsistently. Flooring to whole minutes keeps
+    both in lockstep.
+    """
+    return f"{max(0, seconds) // 60}分"
 
 
 def _progress_bar(ratio: float) -> str:
@@ -118,10 +123,10 @@ def phase_content(state: RoomState, *, now: datetime | None = None) -> str:
     """Two-line content for the phase message.
 
     Line 1: phase label + pause marker (if paused).
-    Line 2: monospace ASCII progress bar with elapsed/total and a Discord
-    relative timestamp (``<t:UNIX:R>``) that ticks on the client side.
-    The timestamp is omitted while paused since a future instant would
-    keep counting down regardless of the pause state.
+    Line 2: monospace ASCII progress bar with minute-granular elapsed/total
+    (``5分 / 25分``) and a Discord relative timestamp (``<t:UNIX:R>``) that
+    ticks on the client side. The timestamp is omitted while paused since
+    a future instant would keep counting down regardless of pause state.
     """
     now = now or datetime.now(UTC)
     duration = state.phase_duration_seconds
@@ -137,7 +142,7 @@ def phase_content(state: RoomState, *, now: datetime | None = None) -> str:
     if state.is_paused:
         header += " ⏸ **一時停止中**"
 
-    bar_line = f"`{bar} {_format_clock(elapsed)} / {_format_clock(duration)}`"
+    bar_line = f"`{bar} {_format_minutes(elapsed)} / {_format_minutes(duration)}`"
     if not state.is_paused:
         end_unix = int((now + timedelta(seconds=remaining)).timestamp())
         bar_line += f" — 終了 <t:{end_unix}:R>"

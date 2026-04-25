@@ -8,6 +8,7 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from src.constants import (
     DEFAULT_LONG_BREAK_EVERY,
     DEFAULT_LONG_BREAK_SECONDS,
+    DEFAULT_REFRESH_MINUTES,
     DEFAULT_SHORT_BREAK_SECONDS,
     DEFAULT_WORK_SECONDS,
 )
@@ -33,8 +34,16 @@ class Settings(BaseSettings):
     pomo_short_break_seconds: int = DEFAULT_SHORT_BREAK_SECONDS
     pomo_long_break_seconds: int = DEFAULT_LONG_BREAK_SECONDS
     pomo_long_break_every: int = DEFAULT_LONG_BREAK_EVERY
+    # How often (in whole minutes) the phase message is re-rendered to
+    # advance the ASCII bar. Clamped to >=1 below.
+    pomo_refresh_minutes: int = DEFAULT_REFRESH_MINUTES
 
     log_level: str = "INFO"
+
+    @field_validator("pomo_refresh_minutes", mode="after")
+    @classmethod
+    def _clamp_refresh_minutes(cls, v: int) -> int:
+        return max(1, v)
 
     @field_validator("discord_guild_ids", mode="before")
     @classmethod
