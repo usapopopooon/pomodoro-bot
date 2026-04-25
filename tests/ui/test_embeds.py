@@ -115,8 +115,13 @@ def test_ended_embed_uses_ended_color_and_reason() -> None:
         _state(completed=3, participants={1: "math"}), reason="owner_ended"
     )
     assert embed.color.value == PHASE_COLOR_ENDED
-    assert "owner_ended" in (embed.description or "")
+    assert "オーナーが終了" in (embed.description or "")
     assert "× 3" in (embed.description or "")
+
+
+def test_ended_embed_falls_back_to_raw_reason_for_unknown_code() -> None:
+    embed = ended_embed(_state(), reason="something_new")
+    assert "something_new" in (embed.description or "")
 
 
 # ---------------------------------------------------------------------------

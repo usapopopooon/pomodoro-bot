@@ -77,13 +77,24 @@ def control_panel_embed(state: RoomState) -> discord.Embed:
     return embed
 
 
+_REASON_JA: dict[str, str] = {
+    "owner_ended": "オーナーが終了",
+    "auto_empty": "参加者がいなくなったため自動終了",
+    "superseded": "新しいパネルに置き換え",
+    "bot_restart": "Bot 再起動",
+    "shutdown": "Bot 停止",
+    "error": "内部エラー",
+}
+
+
 def ended_embed(state: RoomState, reason: str) -> discord.Embed:
+    reason_ja = _REASON_JA.get(reason, reason)
     return discord.Embed(
         title="🏁 ポモドーロ終了",
         description=(
             f"完了したラウンド: ✅ × {state.completed_work_phases}\n"
             f"最終参加者: {len(state.participants)} 人\n"
-            f"終了理由: `{reason}`"
+            f"終了理由: {reason_ja}"
         ),
         color=PHASE_COLOR_ENDED,
     )

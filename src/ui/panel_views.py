@@ -391,7 +391,7 @@ class PhasePanelView(discord.ui.View):
                 child.custom_id = f"{child.custom_id}:{room_id}"
 
     @discord.ui.button(
-        label="Present",
+        label="参加",
         emoji="✅",
         style=discord.ButtonStyle.success,
         custom_id="pp:present",
@@ -416,7 +416,7 @@ class PhasePanelView(discord.ui.View):
             await _reply(interaction, result, ok_text="参加しました。")
 
     @discord.ui.button(
-        label="Options",
+        label="操作",
         style=discord.ButtonStyle.primary,
         custom_id="pp:options",
         row=0,
@@ -440,7 +440,7 @@ class PhasePanelView(discord.ui.View):
         )
 
     @discord.ui.button(
-        label="Stop",
+        label="終了",
         emoji="🛑",
         style=discord.ButtonStyle.danger,
         custom_id="pp:stop",
