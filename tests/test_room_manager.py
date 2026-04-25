@@ -49,11 +49,32 @@ def _manager(*, every: int = 2) -> RoomManager:
 
 
 def _fake_channel(channel_id: int = 555) -> SimpleNamespace:
-    return SimpleNamespace(id=channel_id, send=AsyncMock())
+    """Channel stub whose ``send`` returns message-like objects.
+
+    ``RoomManager._post_phase_start_message`` stores ``channel.send(...)``'s
+    return value as ``state.last_phase_message`` and later reads ``.content``
+    off it for the freeze-on-transition edit. A plain ``AsyncMock`` returns a
+    ``MagicMock`` that auto-creates ``.content`` as another mock, which then
+    breaks ``str.split``. Returning a proper ``SimpleNamespace`` with a real
+    string mirrors Discord's actual Message shape closely enough for these
+    tests.
+    """
+    channel = SimpleNamespace(id=channel_id)
+
+    def _fresh_sent_message(*args: object, **kwargs: object) -> SimpleNamespace:
+        content = kwargs.get("content", "")
+        return SimpleNamespace(
+            id=9999,
+            edit=AsyncMock(),
+            content=content if isinstance(content, str) else "",
+        )
+
+    channel.send = AsyncMock(side_effect=_fresh_sent_message)
+    return channel
 
 
 def _fake_message(channel: SimpleNamespace) -> SimpleNamespace:
-    return SimpleNamespace(id=1234, edit=AsyncMock(), channel=channel)
+    return SimpleNamespace(id=1234, edit=AsyncMock(), channel=channel, content="")
 
 
 async def _spawn_room(
