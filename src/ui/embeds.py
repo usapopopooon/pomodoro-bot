@@ -63,7 +63,7 @@ def control_panel_embed(state: RoomState) -> discord.Embed:
         status_line = "**未開始** — オーナーが ▶️ 開始 を押すと始まります"
 
     embed = discord.Embed(
-        title="🍅 ポモドーロ コントロールパネル",
+        title="🎛 ポモドーロ コントロールパネル",
         description=status_line,
         color=color,
     )
@@ -79,9 +79,9 @@ def control_panel_embed(state: RoomState) -> discord.Embed:
 
 def ended_embed(state: RoomState, reason: str) -> discord.Embed:
     return discord.Embed(
-        title="🍅 ポモドーロ終了",
+        title="🏁 ポモドーロ終了",
         description=(
-            f"完了したラウンド: 🍅 × {state.completed_work_phases}\n"
+            f"完了したラウンド: ✅ × {state.completed_work_phases}\n"
             f"最終参加者: {len(state.participants)} 人\n"
             f"終了理由: `{reason}`"
         ),
@@ -95,7 +95,7 @@ def ended_embed(state: RoomState, reason: str) -> discord.Embed:
 
 
 _PHASE_ICON: dict[Phase, str] = {
-    Phase.WORK: "🍅",
+    Phase.WORK: "⏰",
     Phase.SHORT_BREAK: "☕",
     Phase.LONG_BREAK: "🛌",
 }
@@ -162,7 +162,7 @@ def stats_embed(
         title=f"📊 {user.display_name} の完了数",
         color=0xF1C40F,
     )
-    embed.add_field(name="今日", value=f"🍅 × {today}", inline=True)
-    embed.add_field(name="今週", value=f"🍅 × {week}", inline=True)
-    embed.add_field(name="累計", value=f"🍅 × {total}", inline=True)
+    embed.add_field(name="今日", value=f"✅ × {today}", inline=True)
+    embed.add_field(name="今週", value=f"✅ × {week}", inline=True)
+    embed.add_field(name="累計", value=f"✅ × {total}", inline=True)
     return embed

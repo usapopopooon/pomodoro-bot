@@ -244,7 +244,7 @@ class ControlPanelView(discord.ui.View):
     ) -> None:
         await interaction.response.defer(ephemeral=True, thinking=False)
         result = await self._manager.join(self._room_id, interaction.user.id)
-        await _reply(interaction, result, ok_text="参加しました 🍅")
+        await _reply(interaction, result, ok_text="参加しました。")
 
     @discord.ui.button(
         label="退出",
@@ -327,7 +327,7 @@ class ControlPanelView(discord.ui.View):
     ) -> None:
         await interaction.response.defer(ephemeral=True, thinking=False)
         result = await self._manager.begin_phases(self._room_id, interaction.user.id)
-        await _reply(interaction, result, ok_text="タイマーを開始しました 🍅")
+        await _reply(interaction, result, ok_text="タイマーを開始しました。")
 
     @discord.ui.button(
         label="時間設定",
@@ -411,9 +411,9 @@ class PhasePanelView(discord.ui.View):
         await interaction.response.defer(ephemeral=True, thinking=False)
         result = await self._manager.join(self._room_id, interaction.user.id)
         if result is OpResult.ALREADY_JOINED:
-            await _ephemeral(interaction, "参加済みです。引き続き頑張りましょう 🍅")
+            await _ephemeral(interaction, "参加済みです。引き続き頑張りましょう。")
         else:
-            await _reply(interaction, result, ok_text="参加しました 🍅")
+            await _reply(interaction, result, ok_text="参加しました。")
 
     @discord.ui.button(
         label="Options",
