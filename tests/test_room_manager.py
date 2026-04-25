@@ -509,6 +509,36 @@ async def test_end_by_owner_only_accepts_owner() -> None:
     assert manager.get(state.room_id) is None
 
 
+@pytest.mark.asyncio
+async def test_set_notify_owner_only_and_per_phase() -> None:
+    manager = _manager()
+    state, _ = await _spawn_room(manager, creator=1)
+    await manager.join(state.room_id, 2)
+    try:
+        # Defaults are all on so no one misses transitions.
+        assert state.notify_work is True
+        assert state.notify_short_break is True
+        assert state.notify_long_break is True
+
+        # Non-owner cannot toggle.
+        result = await manager.set_notify(
+            state.room_id, 2, phase=Phase.WORK, enabled=False
+        )
+        assert result is OpResult.NOT_OWNER
+        assert state.notify_work is True
+
+        # Owner toggles only the requested phase.
+        result = await manager.set_notify(
+            state.room_id, 1, phase=Phase.SHORT_BREAK, enabled=False
+        )
+        assert result is OpResult.OK
+        assert state.notify_short_break is False
+        assert state.notify_work is True
+        assert state.notify_long_break is True
+    finally:
+        await manager.end(state.room_id, reason="test")
+
+
 # ---------------------------------------------------------------------------
 # Phase completion credits every active participant
 # ---------------------------------------------------------------------------

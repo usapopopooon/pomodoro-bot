@@ -50,6 +50,13 @@ class RoomState:
     # Start to flip this flag, which kicks off the actual timer.
     has_started: bool = False
 
+    # Per-phase mention toggles. Mentions are wrapped in spoilers so they
+    # fire the notification but don't clutter the channel visually.
+    # Memory-only — resets on every ``/pomo``.
+    notify_work: bool = True
+    notify_short_break: bool = True
+    notify_long_break: bool = True
+
     participants: dict[int, ParticipantState] = field(default_factory=dict)
 
     # ``message`` is the persistent Control Panel message.
@@ -145,6 +152,21 @@ class RoomState:
 
     def is_owner(self, user_id: int) -> bool:
         return user_id == self.created_by
+
+    def notify_enabled_for(self, phase: Phase) -> bool:
+        return {
+            Phase.WORK: self.notify_work,
+            Phase.SHORT_BREAK: self.notify_short_break,
+            Phase.LONG_BREAK: self.notify_long_break,
+        }[phase]
+
+    def set_notify_for(self, phase: Phase, enabled: bool) -> None:
+        if phase is Phase.WORK:
+            self.notify_work = enabled
+        elif phase is Phase.SHORT_BREAK:
+            self.notify_short_break = enabled
+        else:
+            self.notify_long_break = enabled
 
     def next_owner_after_leave(self, leaving_user_id: int) -> int | None:
         """Return the earliest-joined remaining participant, or ``None``."""

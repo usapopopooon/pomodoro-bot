@@ -435,6 +435,30 @@ class RoomManager:
         await self._refresh_phase_message(state)
         return OpResult.OK
 
+    async def set_notify(
+        self, room_id: UUID, user_id: int, *, phase: Phase, enabled: bool
+    ) -> OpResult:
+        """Toggle the per-phase mention setting. Owner-only.
+
+        The new value takes effect on the **next** phase boundary; the
+        currently-running phase keeps whatever it was posted with.
+        """
+        state = self._rooms.get(room_id)
+        if state is None:
+            return OpResult.ROOM_NOT_FOUND
+        if not state.is_owner(user_id):
+            return OpResult.NOT_OWNER
+        async with state.lock:
+            state.set_notify_for(phase, enabled)
+            async with async_session() as db:
+                await svc.record_event(
+                    db,
+                    room_id=room_id,
+                    event_type="notify_updated",
+                    payload={"phase": phase, "enabled": enabled},
+                )
+        return OpResult.OK
+
     async def end_by_owner(self, room_id: UUID, user_id: int) -> OpResult:
         state = self._rooms.get(room_id)
         if state is None:
@@ -564,7 +588,15 @@ class RoomManager:
 
         view = PhasePanelView(self, state.room_id)
         try:
-            msg = await channel.send(content=content, view=view)
+            # Explicit allowed_mentions: spoiler-wrapped ``||<@uid>||`` should
+            # still fire user pings, but never ping @everyone or roles.
+            msg = await channel.send(
+                content=content,
+                view=view,
+                allowed_mentions=discord.AllowedMentions(
+                    users=True, everyone=False, roles=False
+                ),
+            )
         except discord.HTTPException:
             logger.warning(
                 "phase.announce failed room_id=%s phase=%s",

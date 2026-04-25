@@ -93,7 +93,7 @@ async def test_task_modal_prefill_none_leaves_default_unset() -> None:
 
 
 @pytest.mark.asyncio
-async def test_control_panel_has_seven_buttons_and_room_specific_custom_ids() -> None:
+async def test_control_panel_has_eight_buttons_and_room_specific_custom_ids() -> None:
     r1 = uuid4()
     r2 = uuid4()
     v1 = ControlPanelView(_manager_stub(), r1)
@@ -101,8 +101,9 @@ async def test_control_panel_has_seven_buttons_and_room_specific_custom_ids() ->
 
     ids_v1 = {c.custom_id for c in v1.children if isinstance(c, discord.ui.Button)}
     ids_v2 = {c.custom_id for c in v2.children if isinstance(c, discord.ui.Button)}
-    assert len(ids_v1) == 7  # join/leave/task/stats + start/cycle/end
-    assert len(ids_v2) == 7
+    # join/leave/task/stats + start/cycle/notify/end
+    assert len(ids_v1) == 8
+    assert len(ids_v2) == 8
     assert ids_v1.isdisjoint(ids_v2)
     assert all(cid.endswith(str(r1)) for cid in ids_v1 if cid)
     assert all(cid.endswith(str(r2)) for cid in ids_v2 if cid)

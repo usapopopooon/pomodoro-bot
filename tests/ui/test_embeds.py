@@ -186,6 +186,31 @@ def test_phase_content_drops_timestamp_once_phase_is_complete() -> None:
     assert "<t:" not in msg
 
 
+def test_phase_content_prepends_spoiler_mention_when_notify_enabled() -> None:
+    state = _state(participants={1: "math", 2: None}, has_started=True)
+    msg = phase_content(state)
+    # First line is the spoiler-wrapped mention list — pings every
+    # participant but stays visually hidden behind the spoiler bar.
+    first = msg.split("\n", 1)[0]
+    assert first.startswith("||")
+    assert first.endswith("||")
+    assert "<@1>" in first
+    assert "<@2>" in first
+
+
+def test_phase_content_omits_mentions_when_notify_disabled_for_phase() -> None:
+    state = _state(phase=Phase.SHORT_BREAK, participants={1: "math"}, has_started=True)
+    state.notify_short_break = False
+    msg = phase_content(state)
+    assert "||" not in msg
+    assert "<@1>" not in msg
+
+
+def test_phase_content_omits_mentions_when_no_participants() -> None:
+    msg = phase_content(_state(participants={}, has_started=True))
+    assert "||" not in msg
+
+
 # ---------------------------------------------------------------------------
 # Stats embed
 # ---------------------------------------------------------------------------

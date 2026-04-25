@@ -130,11 +130,28 @@ def _progress_bar(ratio: float) -> str:
     )
 
 
-def phase_content(state: RoomState, *, now: datetime | None = None) -> str:
-    """Two-line content for the phase message.
+def _mention_prefix(state: RoomState) -> str:
+    """Spoiler-wrapped mention line for the current phase, or ``""``.
 
-    Line 1: phase label + pause marker (if paused).
-    Line 2: monospace ASCII progress bar with minute-granular elapsed/total
+    Wrapping in ``||...||`` keeps the ping firing while hiding the usernames
+    behind a spoiler bar — so the message stays visually clean but still
+    notifies every participant.
+    """
+    if not state.participants:
+        return ""
+    if not state.notify_enabled_for(state.phase):
+        return ""
+    mentions = " ".join(f"<@{uid}>" for uid in state.participants)
+    return f"||{mentions}||"
+
+
+def phase_content(state: RoomState, *, now: datetime | None = None) -> str:
+    """Phase message content.
+
+    Line 1 (optional): spoiler-wrapped participant mentions when this phase
+    has notifications enabled — fires the ping, hides the names.
+    Line 2: phase label + pause marker (if paused).
+    Line 3: monospace ASCII progress bar with minute-granular elapsed/total
     (``5分 / 25分``) and a Discord relative timestamp (``<t:UNIX:R>``) that
     ticks on the client side. The timestamp is omitted while paused since
     a future instant would keep counting down regardless of pause state,
@@ -160,7 +177,11 @@ def phase_content(state: RoomState, *, now: datetime | None = None) -> str:
         end_unix = int((now + timedelta(seconds=remaining)).timestamp())
         bar_line += f" — 終了 <t:{end_unix}:R>"
 
-    return f"{header}\n{bar_line}"
+    lines = [header, bar_line]
+    prefix = _mention_prefix(state)
+    if prefix:
+        lines.insert(0, prefix)
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------

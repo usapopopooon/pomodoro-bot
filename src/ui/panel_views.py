@@ -18,10 +18,11 @@ from uuid import UUID
 
 import discord
 
-from src.core.phase import PhasePlan
+from src.core.phase import Phase, PhasePlan
 from src.ui.embeds import stats_embed
 
 if TYPE_CHECKING:
+    from src.core.room_state import RoomState
     from src.room_manager import RoomManager
 
 from src.room_manager import OpResult
@@ -203,7 +204,7 @@ class ControlPanelView(discord.ui.View):
 
     Layout:
         Row 0 (everyone):  [🙋 参加] [🚪 退出] [✍️ タスク] [📊 統計]
-        Row 1 (owner):     [▶️ 開始] [⚙️ 時間設定] [🛑 終了]
+        Row 1 (owner):     [▶️ 開始] [⚙️ 時間設定] [🔔 通知] [🛑 終了]
 
     ``has_started`` only affects the Start button's enabled state — the
     button itself is always present so the layout doesn't shift.
@@ -350,6 +351,34 @@ class ControlPanelView(discord.ui.View):
             return
         await interaction.response.send_modal(
             CycleSettingsModal(self._manager, self._room_id, state.plan)
+        )
+
+    @discord.ui.button(
+        label="通知",
+        emoji="🔔",
+        style=discord.ButtonStyle.secondary,
+        custom_id="cp:notify",
+        row=1,
+    )
+    async def notify_button(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button[ControlPanelView],
+    ) -> None:
+        state = self._manager.get(self._room_id)
+        if state is None:
+            await _ephemeral(interaction, REJECT_MESSAGES[OpResult.ROOM_NOT_FOUND])
+            return
+        if not state.is_owner(interaction.user.id):
+            await _ephemeral(interaction, REJECT_MESSAGES[OpResult.NOT_OWNER])
+            return
+        await interaction.response.send_message(
+            content=(
+                "**通知設定** — フェーズ開始時にスポイラー付きメンションを"
+                "送るかどうかを切り替えます。"
+            ),
+            view=NotificationSettingsView(self._manager, self._room_id, state),
+            ephemeral=True,
         )
 
     @discord.ui.button(
@@ -528,3 +557,95 @@ class OptionsView(discord.ui.View):
         await interaction.response.send_modal(
             CycleSettingsModal(self._manager, self._room_id, state.plan)
         )
+
+
+# ---------------------------------------------------------------------------
+# Notification settings — ephemeral sub-view of Control Panel
+# ---------------------------------------------------------------------------
+
+
+_NOTIFY_CONFIG: tuple[tuple[str, Phase, str], ...] = (
+    ("ns:work", Phase.WORK, "作業"),
+    ("ns:short", Phase.SHORT_BREAK, "短休憩"),
+    ("ns:long", Phase.LONG_BREAK, "長休憩"),
+)
+
+
+class NotificationSettingsView(discord.ui.View):
+    """Ephemeral toggles for per-phase mention pings.
+
+    Three buttons — one per phase. Each shows ``ON``/``OFF`` reflecting the
+    current ``RoomState`` flag, and pressing toggles + re-renders the view.
+    Owner-only is enforced server-side via :meth:`RoomManager.set_notify`.
+    """
+
+    def __init__(self, manager: RoomManager, room_id: UUID, state: RoomState) -> None:
+        super().__init__(timeout=180)
+        self._manager = manager
+        self._room_id = room_id
+        self._sync_labels(state)
+
+    def _sync_labels(self, state: RoomState) -> None:
+        flags = {
+            "ns:work": state.notify_work,
+            "ns:short": state.notify_short_break,
+            "ns:long": state.notify_long_break,
+        }
+        names = {key: label for key, _, label in _NOTIFY_CONFIG}
+        for child in self.children:
+            if not isinstance(child, discord.ui.Button) or not child.custom_id:
+                continue
+            key = child.custom_id
+            if key not in flags:
+                continue
+            enabled = flags[key]
+            child.label = f"{names[key]}: {'ON' if enabled else 'OFF'}"
+            child.emoji = "🔔" if enabled else "🔕"
+            child.style = (
+                discord.ButtonStyle.success
+                if enabled
+                else discord.ButtonStyle.secondary
+            )
+
+    async def _toggle(self, interaction: discord.Interaction, phase: Phase) -> None:
+        state = self._manager.get(self._room_id)
+        if state is None:
+            await _ephemeral(interaction, REJECT_MESSAGES[OpResult.ROOM_NOT_FOUND])
+            return
+        new_value = not state.notify_enabled_for(phase)
+        result = await self._manager.set_notify(
+            self._room_id, interaction.user.id, phase=phase, enabled=new_value
+        )
+        if result is not OpResult.OK:
+            await _ephemeral(
+                interaction, REJECT_MESSAGES.get(result, "操作に失敗しました。")
+            )
+            return
+        refreshed = self._manager.get(self._room_id)
+        if refreshed is not None:
+            self._sync_labels(refreshed)
+        await interaction.response.edit_message(view=self)
+
+    @discord.ui.button(label="作業", custom_id="ns:work")
+    async def work(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button[NotificationSettingsView],
+    ) -> None:
+        await self._toggle(interaction, Phase.WORK)
+
+    @discord.ui.button(label="短休憩", custom_id="ns:short")
+    async def short_break(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button[NotificationSettingsView],
+    ) -> None:
+        await self._toggle(interaction, Phase.SHORT_BREAK)
+
+    @discord.ui.button(label="長休憩", custom_id="ns:long")
+    async def long_break(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button[NotificationSettingsView],
+    ) -> None:
+        await self._toggle(interaction, Phase.LONG_BREAK)
