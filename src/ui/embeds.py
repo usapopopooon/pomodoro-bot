@@ -137,7 +137,9 @@ def phase_content(state: RoomState, *, now: datetime | None = None) -> str:
     Line 2: monospace ASCII progress bar with minute-granular elapsed/total
     (``5分 / 25分``) and a Discord relative timestamp (``<t:UNIX:R>``) that
     ticks on the client side. The timestamp is omitted while paused since
-    a future instant would keep counting down regardless of pause state.
+    a future instant would keep counting down regardless of pause state,
+    and also once the phase is complete — otherwise it would drift into
+    "X minutes ago" after the bar fills up.
     """
     now = now or datetime.now(UTC)
     duration = state.phase_duration_seconds
@@ -154,7 +156,7 @@ def phase_content(state: RoomState, *, now: datetime | None = None) -> str:
         header += " ⏸ **一時停止中**"
 
     bar_line = f"`{bar} {_format_minutes(elapsed)} / {_format_minutes(duration)}`"
-    if not state.is_paused:
+    if not state.is_paused and remaining > 0:
         end_unix = int((now + timedelta(seconds=remaining)).timestamp())
         bar_line += f" — 終了 <t:{end_unix}:R>"
 

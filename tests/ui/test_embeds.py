@@ -179,6 +179,13 @@ def test_phase_content_drops_timestamp_and_marks_paused_when_paused() -> None:
     assert "<t:" not in msg
 
 
+def test_phase_content_drops_timestamp_once_phase_is_complete() -> None:
+    # Bar is full — the timestamp would drift into "X minutes ago", which is
+    # noise. Drop it at completion.
+    msg = phase_content(_state(elapsed_seconds=1500, has_started=True))
+    assert "<t:" not in msg
+
+
 # ---------------------------------------------------------------------------
 # Stats embed
 # ---------------------------------------------------------------------------
