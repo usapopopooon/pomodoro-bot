@@ -12,6 +12,7 @@ from src.core.phase import Phase, PhasePlan
 from src.core.room_state import ParticipantState, RoomState
 from src.database.engine import async_session
 from src.services import room_service as svc
+from src.voice_manager import VoiceManager
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,9 @@ class OpResult(StrEnum):
     NOT_YET_STARTED = "not_yet_started"
     ROOM_NOT_FOUND = "room_not_found"
     ANOTHER_ROOM = "another_room"
+    OWNER_NOT_IN_VOICE = "owner_not_in_voice"
+    NO_GUILD_CONTEXT = "no_guild_context"
+    VOICE_UNAVAILABLE = "voice_unavailable"
 
 
 class RoomManager:
@@ -55,6 +59,7 @@ class RoomManager:
         *,
         default_plan: PhasePlan,
         refresh_seconds: int = 60,
+        voice_manager: VoiceManager | None = None,
     ) -> None:
         self._rooms: dict[UUID, RoomState] = {}
         self._default_plan = default_plan
@@ -63,10 +68,17 @@ class RoomManager:
         # the ASCII bar, so text and bar advance in step.
         self._refresh_seconds = max(1, refresh_seconds)
         self._registry_lock = asyncio.Lock()
+        # Voice playback is optional — tests / DM-only flows pass ``None``
+        # and every voice call short-circuits to a no-op.
+        self._voice = voice_manager
 
     @property
     def default_plan(self) -> PhasePlan:
         return self._default_plan
+
+    @property
+    def voice(self) -> VoiceManager | None:
+        return self._voice
 
     def get(self, room_id: UUID) -> RoomState | None:
         return self._rooms.get(room_id)
@@ -179,6 +191,11 @@ class RoomManager:
             return None
         if state.task_handle is not None and not state.task_handle.done():
             state.task_handle.cancel()
+
+        # Drop the voice connection (if any) before touching the DB so
+        # users hear the channel quiet down even if the DB write stalls.
+        if self._voice is not None and state.guild_id is not None:
+            await self._voice.disconnect(state.guild_id)
 
         async with async_session() as db:
             await svc.end_room(db, room_id, reason=reason)
@@ -477,6 +494,50 @@ class RoomManager:
         if not state.is_owner(user_id):
             return OpResult.NOT_OWNER
         await self.end(room_id, reason="owner_ended")
+        return OpResult.OK
+
+    async def toggle_voice(
+        self,
+        room_id: UUID,
+        user_id: int,
+        *,
+        voice_channel: discord.VoiceChannel | None,
+    ) -> OpResult:
+        """Connect / disconnect the bot's voice channel for this room.
+
+        Owner-only. Pre-condition: the owner must currently be in a voice
+        channel (caller resolves it from ``interaction.user.voice``). On
+        connect we play ``connected.wav`` so the listeners hear an explicit
+        "接続しました" cue rather than silence. Re-pressing the button while
+        connected disconnects.
+        """
+        state = self._rooms.get(room_id)
+        if state is None:
+            return OpResult.ROOM_NOT_FOUND
+        if not state.is_owner(user_id):
+            return OpResult.NOT_OWNER
+        if state.guild_id is None:
+            return OpResult.NO_GUILD_CONTEXT
+        if self._voice is None:
+            return OpResult.VOICE_UNAVAILABLE
+
+        # Toggle off when already connected, regardless of which channel —
+        # owner pressed a second time, they want quiet.
+        if self._voice.is_connected(state.guild_id):
+            await self._voice.disconnect(state.guild_id)
+            return OpResult.OK
+
+        # Connect path: owner must currently be in a VC for us to know
+        # where to join. Surfaced to the UI as a clean "join a VC first".
+        if voice_channel is None:
+            return OpResult.OWNER_NOT_IN_VOICE
+
+        connected = await self._voice.connect(voice_channel)
+        if not connected:
+            return OpResult.VOICE_UNAVAILABLE
+        # Best-effort cue — failures are logged inside ``play_clip`` and
+        # don't block the room.
+        await self._voice.play_clip(state.guild_id, "connected")
         return OpResult.OK
 
     # ------------------------------------------------------------------

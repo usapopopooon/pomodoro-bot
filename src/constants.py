@@ -1,5 +1,14 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+# Project-relative path to the directory holding the .wav cues. Resolved
+# from this file's location so the path stays valid regardless of the
+# working directory the bot is launched from. Override with
+# ``POMO_VOICES_DIR`` if cues live somewhere else (e.g. mounted volume).
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+VOICES_DIR = PROJECT_ROOT / "voices"
+
 DEFAULT_EMBED_COLOR = 0xE74C3C
 
 PHASE_COLOR_WORK = 0xE74C3C

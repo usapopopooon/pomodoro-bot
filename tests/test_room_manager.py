@@ -10,7 +10,7 @@ import asyncio
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import pytest_asyncio
@@ -553,6 +553,102 @@ async def test_end_by_owner_only_accepts_owner() -> None:
     assert manager.get(state.room_id) is state
     assert await manager.end_by_owner(state.room_id, 1) is OpResult.OK
     assert manager.get(state.room_id) is None
+
+
+@pytest.mark.asyncio
+async def test_toggle_voice_rejects_non_owner_and_dm_room() -> None:
+    """Owner gate + guild-context gate.
+
+    The voice channel argument doesn't matter here because both rejections
+    must fire before the manager touches the VoiceManager.
+    """
+    voice_mgr = AsyncMock()
+    voice_mgr.is_connected = MagicMock(return_value=False)
+    manager = RoomManager(default_plan=PhasePlan(10, 2, 4, 2), voice_manager=voice_mgr)
+
+    # Guild-bound room → non-owner rejected.
+    state, _ = await _spawn_room(manager, creator=1)
+    state.guild_id = 999
+    await manager.join(state.room_id, 2)
+    try:
+        result = await manager.toggle_voice(state.room_id, 2, voice_channel=MagicMock())
+        assert result is OpResult.NOT_OWNER
+        voice_mgr.connect.assert_not_called()
+    finally:
+        await manager.end(state.room_id, reason="test")
+
+    # DM-style (guild_id is None) → NO_GUILD_CONTEXT for any caller.
+    state2, _ = await _spawn_room(manager, creator=1, channel_id=4321)
+    state2.guild_id = None
+    try:
+        result = await manager.toggle_voice(
+            state2.room_id, 1, voice_channel=MagicMock()
+        )
+        assert result is OpResult.NO_GUILD_CONTEXT
+    finally:
+        await manager.end(state2.room_id, reason="test")
+
+
+@pytest.mark.asyncio
+async def test_toggle_voice_requires_owner_in_voice_channel_to_connect() -> None:
+    voice_mgr = MagicMock()
+    voice_mgr.is_connected = MagicMock(return_value=False)
+    voice_mgr.connect = AsyncMock(return_value=True)
+    voice_mgr.disconnect = AsyncMock()
+    voice_mgr.play_clip = AsyncMock(return_value=True)
+    manager = RoomManager(default_plan=PhasePlan(10, 2, 4, 2), voice_manager=voice_mgr)
+    state, _ = await _spawn_room(manager, creator=1)
+    state.guild_id = 999
+    try:
+        result = await manager.toggle_voice(state.room_id, 1, voice_channel=None)
+        assert result is OpResult.OWNER_NOT_IN_VOICE
+        voice_mgr.connect.assert_not_called()
+    finally:
+        await manager.end(state.room_id, reason="test")
+
+
+@pytest.mark.asyncio
+async def test_toggle_voice_connect_then_disconnect() -> None:
+    """Two presses: first connects + plays cue, second disconnects."""
+    voice_mgr = MagicMock()
+    # Idle on first call, connected on the second so the toggle flips.
+    voice_mgr.is_connected = MagicMock(side_effect=[False, True])
+    voice_mgr.connect = AsyncMock(return_value=True)
+    voice_mgr.disconnect = AsyncMock()
+    voice_mgr.play_clip = AsyncMock(return_value=True)
+    manager = RoomManager(default_plan=PhasePlan(10, 2, 4, 2), voice_manager=voice_mgr)
+    state, _ = await _spawn_room(manager, creator=1)
+    state.guild_id = 999
+    fake_channel = MagicMock()
+    try:
+        # First press → connect + connected.wav.
+        first = await manager.toggle_voice(state.room_id, 1, voice_channel=fake_channel)
+        assert first is OpResult.OK
+        voice_mgr.connect.assert_awaited_once_with(fake_channel)
+        voice_mgr.play_clip.assert_awaited_once_with(999, "connected")
+
+        # Second press → disconnect, no extra connect call.
+        second = await manager.toggle_voice(
+            state.room_id, 1, voice_channel=fake_channel
+        )
+        assert second is OpResult.OK
+        voice_mgr.disconnect.assert_awaited_once_with(999)
+        # Connect should NOT have been called a second time.
+        assert voice_mgr.connect.await_count == 1
+    finally:
+        await manager.end(state.room_id, reason="test")
+
+
+@pytest.mark.asyncio
+async def test_room_end_disconnects_voice() -> None:
+    voice_mgr = MagicMock()
+    voice_mgr.is_connected = MagicMock(return_value=True)
+    voice_mgr.disconnect = AsyncMock()
+    manager = RoomManager(default_plan=PhasePlan(10, 2, 4, 2), voice_manager=voice_mgr)
+    state, _ = await _spawn_room(manager, creator=1)
+    state.guild_id = 7777
+    await manager.end(state.room_id, reason="owner_ended")
+    voice_mgr.disconnect.assert_awaited_once_with(7777)
 
 
 @pytest.mark.asyncio

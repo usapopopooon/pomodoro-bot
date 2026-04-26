@@ -14,6 +14,7 @@ from src.room_manager import RoomManager
 from src.services import room_service as svc
 from src.ui.embeds import control_panel_embed
 from src.ui.panel_views import ControlPanelView
+from src.voice_manager import VoiceManager
 
 logger = logging.getLogger(__name__)
 
@@ -50,9 +51,14 @@ class PomodoroBot(commands.Bot):
             intents=intents,
             activity=discord.Game(name="/pomo"),
         )
+        # One VoiceManager per bot instance. Multi-bot deploys end up with
+        # one connection slot per guild *per bot*, which is the whole point
+        # of running multiple identities in the first place.
+        self.voice_manager: VoiceManager = VoiceManager()
         self.room_manager: RoomManager = RoomManager(
             default_plan=_build_default_plan(),
             refresh_seconds=settings.pomo_refresh_minutes * 60,
+            voice_manager=self.voice_manager,
         )
 
     async def setup_hook(self) -> None:
@@ -97,6 +103,11 @@ class PomodoroBot(commands.Bot):
         active = len(self.room_manager.active_rooms())
         logger.info("shutting down: closing %d live rooms", active)
         await self.room_manager.end_all(reason="shutdown")
+        # ``end_all`` already drops VC connections for each room as it
+        # closes them, but a stray idle connection (no live room) is still
+        # possible if e.g. ``toggle_voice`` succeeded but ``/pomo`` was
+        # already gone. Belt-and-braces.
+        await self.voice_manager.disconnect_all()
         await super().close()
         await dispose_engine()
 

@@ -41,6 +41,15 @@ REJECT_MESSAGES: dict[OpResult, str] = {
     OpResult.ANOTHER_ROOM: (
         "他のポモドーロに参加中です。そちらを退出してから参加してください。"
     ),
+    OpResult.OWNER_NOT_IN_VOICE: (
+        "先にボイスチャンネルに入ってから 🔊 ボイス を押してください。"
+    ),
+    OpResult.NO_GUILD_CONTEXT: (
+        "ボイスチャンネルでの再生はサーバー内でのみ利用できます。"
+    ),
+    OpResult.VOICE_UNAVAILABLE: (
+        "ボイスチャンネルに接続できませんでした。権限・接続状況をご確認ください。"
+    ),
 }
 
 
@@ -204,7 +213,7 @@ class ControlPanelView(discord.ui.View):
 
     Layout:
         Row 0 (everyone):  [🙋 参加] [🚪 退出] [✍️ タスク] [📊 統計] [❓ 使い方]
-        Row 1 (owner):     [▶️ 開始] [⚙️ 時間設定] [🔔 通知] [🛑 終了]
+        Row 1 (owner):     [▶️ 開始] [⚙️ 時間設定] [🔔 通知] [🔊 ボイス] [🛑 終了]
 
     ``has_started`` only affects the Start button's enabled state — the
     button itself is always present so the layout doesn't shift.
@@ -394,6 +403,50 @@ class ControlPanelView(discord.ui.View):
             view=NotificationSettingsView(self._manager, self._room_id, state),
             ephemeral=True,
         )
+
+    @discord.ui.button(
+        label="ボイス",
+        emoji="🔊",
+        style=discord.ButtonStyle.secondary,
+        custom_id="cp:voice",
+        row=1,
+    )
+    async def voice_button(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button[ControlPanelView],
+    ) -> None:
+        """Connect / disconnect the bot's voice channel for this room.
+
+        Resolves the owner's current VC from their member voice state — the
+        button itself doesn't carry channel info, so the source of truth is
+        wherever the owner happens to be sitting when they press it.
+        """
+        await interaction.response.defer(ephemeral=True, thinking=False)
+        # Only ``Member`` carries ``.voice``; ``User`` (DM context) doesn't.
+        member = interaction.user
+        voice_channel: discord.VoiceChannel | None = None
+        voice_state = getattr(member, "voice", None)
+        if voice_state is not None:
+            channel = voice_state.channel
+            if isinstance(channel, discord.VoiceChannel):
+                voice_channel = channel
+        result = await self._manager.toggle_voice(
+            self._room_id, interaction.user.id, voice_channel=voice_channel
+        )
+        # Connect vs disconnect — pick the OK text from the manager state
+        # *after* the call so the message matches reality.
+        ok_text = "ボイスを切断しました。"
+        state = self._manager.get(self._room_id)
+        if (
+            result is OpResult.OK
+            and state is not None
+            and state.guild_id is not None
+            and self._manager.voice is not None
+            and self._manager.voice.is_connected(state.guild_id)
+        ):
+            ok_text = "ボイスを接続しました。"
+        await _reply(interaction, result, ok_text=ok_text)
 
     @discord.ui.button(
         label="終了",
