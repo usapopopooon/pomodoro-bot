@@ -629,12 +629,37 @@ async def test_natural_phase_end_plays_end_alarm_start_trio() -> None:
     finally:
         await manager.end(state.room_id, reason="test")
     cues = _played_clip_names(voice)
-    # The trio for WORK→SHORT_BREAK, in order, before any ``end`` cue from
-    # the cleanup ``manager.end(reason="test")`` (which doesn't emit one).
-    end_idx = cues.index("end-task")
-    alarm_idx = cues.index("alarm", end_idx)
-    start_idx = cues.index("start-break", alarm_idx)
-    assert end_idx < alarm_idx < start_idx
+    # Trio for WORK→SHORT_BREAK: alarm fires first as the attention
+    # grab, then the end / start announcements.
+    alarm_idx = cues.index("alarm")
+    end_idx = cues.index("end-task", alarm_idx)
+    start_idx = cues.index("start-break", end_idx)
+    assert alarm_idx < end_idx < start_idx
+
+
+@pytest.mark.asyncio
+async def test_break_to_work_transition_has_no_alarm() -> None:
+    """Break-end is a calm "back to work" cue — alarm would be jarring."""
+    voice = _connected_voice_stub()
+    manager = RoomManager(default_plan=PhasePlan(10, 2, 4, 2), voice_manager=voice)
+    state, _ = await _spawn_room(manager, creator=1)
+    state.guild_id = 1234
+    _claim_voice_ownership(manager, state)
+    await manager.join(state.room_id, 1)
+    # Force the next ``_handle_phase_end`` to run on a SHORT_BREAK so the
+    # transition direction is BREAK → WORK rather than the WORK → BREAK
+    # case covered above.
+    state.phase = Phase.SHORT_BREAK
+    try:
+        await manager._handle_phase_end(state)
+        assert state.phase is Phase.WORK
+    finally:
+        await manager.end(state.room_id, reason="test")
+    cues = _played_clip_names(voice)
+    assert "end-break" in cues
+    assert "start-task" in cues
+    # Crucially: no alarm on this side of the transition.
+    assert "alarm" not in cues
 
 
 @pytest.mark.asyncio
@@ -789,10 +814,11 @@ async def test_maybe_play_one_minute_cue_skipped_when_phase_already_done() -> No
 
 
 @pytest.mark.asyncio
-async def test_phase_loop_plays_room_start_cues_on_init() -> None:
-    """Loop prelude: post message + ``start.wav`` + ``start-task.wav``.
+async def test_phase_loop_plays_room_start_cue_on_init() -> None:
+    """Loop prelude: post message + single ``start.wav``.
 
-    Run the loop briefly, then cancel before its long sleep would expire.
+    ``start-task`` would be redundant — "開始します" + "タスクを開始します"
+    just double-announces the same event from the user's POV.
     """
     voice = _connected_voice_stub()
     manager = RoomManager(default_plan=PhasePlan(60, 30, 90, 4), voice_manager=voice)
@@ -806,7 +832,7 @@ async def test_phase_loop_plays_room_start_cues_on_init() -> None:
     loop = asyncio.get_running_loop()
     deadline = loop.time() + 1.0
     while (  # noqa: ASYNC110
-        loop.time() < deadline and voice.play_clip.await_count < 2
+        loop.time() < deadline and voice.play_clip.await_count < 1
     ):
         await asyncio.sleep(0.01)
     task.cancel()
@@ -815,7 +841,8 @@ async def test_phase_loop_plays_room_start_cues_on_init() -> None:
     await manager.end(state.room_id, reason="test")
 
     cues = _played_clip_names(voice)
-    assert cues[:2] == ["start", "start-task"]
+    assert cues[:1] == ["start"]
+    assert "start-task" not in cues
 
 
 @pytest.mark.asyncio

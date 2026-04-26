@@ -637,14 +637,21 @@ class RoomManager:
         phase_just_ended: Phase,
         next_phase: Phase,
     ) -> None:
-        """``end-X`` → ``alarm`` → ``start-Y`` for natural phase transitions.
+        """Play the announcement trio for a natural phase transition.
 
-        Sequenced rather than concurrent — Discord only allows one play per
-        voice client at a time, and we want listeners to hear them in
-        announcement order anyway.
+        WORK → BREAK: ``alarm`` → ``end-task`` → ``start-X``. The alarm
+        fires first as the attention-grabbing "focus is over" ding before
+        listeners switch context.
+
+        BREAK → WORK: ``end-X`` → ``start-task``. No alarm — break-end is
+        a calm "back to work" cue, an alarm here would feel jarring.
+
+        Sequenced rather than concurrent — Discord only allows one play
+        per voice client at a time anyway.
         """
+        if phase_just_ended is Phase.WORK:
+            await self._play_cue(state, "alarm")
         await self._play_cue(state, _END_CLIP[phase_just_ended])
-        await self._play_cue(state, "alarm")
         await self._play_cue(state, _START_CLIP[next_phase])
 
     async def _evict_from_other_rooms(
@@ -671,10 +678,10 @@ class RoomManager:
         try:
             # Visual first.
             await self._post_phase_start_message(state)
-            # Audio cues for the very start. Best-effort: if voice isn't
-            # connected (yet) these short-circuit instantly.
+            # Single ``start`` cue at room start. Adding ``start-task`` on
+            # top would just double-announce ("開始します" → "タスクを開始
+            # します") for what is one event from the user's perspective.
             await self._play_cue(state, "start")
-            await self._play_cue(state, _START_CLIP[state.phase])
 
             while True:
                 if state.is_paused:
