@@ -94,6 +94,8 @@ class RoomManager:
         # Voice playback is optional — tests / DM-only flows pass ``None``
         # and every voice call short-circuits to a no-op.
         self._voice = voice_manager
+        # GuildごとのVC利用権。音声再生/切断は所有ルームだけが行う。
+        self._voice_room_by_guild: dict[int, UUID] = {}
 
     @property
     def default_plan(self) -> PhasePlan:
@@ -221,10 +223,13 @@ class RoomManager:
         # waiting on the audio cue and we want the disconnect to be
         # punchy.
         if self._voice is not None and state.guild_id is not None:
-            cue = _END_REASON_CUE.get(reason)
-            if cue is not None:
-                await self._play_cue(state, cue)
-            await self._voice.disconnect(state.guild_id)
+            owner_room = self._voice_room_by_guild.get(state.guild_id)
+            if owner_room == state.room_id:
+                cue = _END_REASON_CUE.get(reason)
+                if cue is not None:
+                    await self._play_cue(state, cue)
+                await self._voice.disconnect(state.guild_id)
+                self._voice_room_by_guild.pop(state.guild_id, None)
 
         async with async_session() as db:
             await svc.end_room(db, room_id, reason=reason)
@@ -558,11 +563,21 @@ class RoomManager:
         if self._voice is None:
             return OpResult.VOICE_UNAVAILABLE
 
-        # Toggle off when already connected, regardless of which channel —
-        # owner pressed a second time, they want quiet.
-        if self._voice.is_connected(state.guild_id):
+        owner_room = self._voice_room_by_guild.get(state.guild_id)
+
+        # 同じルームが掴んでいる場合だけ toggle-off を許可する。
+        if owner_room == room_id and self._voice.is_connected(state.guild_id):
             await self._voice.disconnect(state.guild_id)
+            self._voice_room_by_guild.pop(state.guild_id, None)
             return OpResult.OK
+
+        # 他ルームが使用中なら奪わない。
+        if (
+            owner_room is not None
+            and owner_room != room_id
+            and self._voice.is_connected(state.guild_id)
+        ):
+            return OpResult.VOICE_UNAVAILABLE
 
         # Connect path: owner must currently be in a VC for us to know
         # where to join. Surfaced to the UI as a clean "join a VC first".
@@ -572,6 +587,7 @@ class RoomManager:
         connected = await self._voice.connect(voice_channel)
         if not connected:
             return OpResult.VOICE_UNAVAILABLE
+        self._voice_room_by_guild[state.guild_id] = room_id
         # Best-effort cue — failures are logged inside ``play_clip`` and
         # don't block the room.
         await self._voice.play_clip(state.guild_id, "connected")
@@ -589,6 +605,9 @@ class RoomManager:
         phase loop / button handlers don't repeat it.
         """
         if self._voice is None or state.guild_id is None:
+            return
+        # 他ルームが掴んでいるVCには再生しない。
+        if self._voice_room_by_guild.get(state.guild_id) != state.room_id:
             return
         if not self._voice.is_connected(state.guild_id):
             return

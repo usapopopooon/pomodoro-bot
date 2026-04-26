@@ -570,12 +570,21 @@ def _played_clip_names(voice: MagicMock) -> list[str]:
     return [call.args[1] for call in voice.play_clip.await_args_list]
 
 
+def _claim_voice_ownership(manager: RoomManager, state: object) -> None:
+    guild_id = getattr(state, "guild_id", None)
+    room_id = getattr(state, "room_id", None)
+    assert isinstance(guild_id, int)
+    assert room_id is not None
+    manager._voice_room_by_guild[guild_id] = room_id  # type: ignore[attr-defined]
+
+
 @pytest.mark.asyncio
 async def test_pause_and_resume_emit_voice_cues() -> None:
     voice = _connected_voice_stub()
     manager = RoomManager(default_plan=PhasePlan(10, 2, 4, 2), voice_manager=voice)
     state, _ = await _spawn_room(manager, creator=1)
     state.guild_id = 1234
+    _claim_voice_ownership(manager, state)
     try:
         assert await manager.toggle_pause(state.room_id, 1) is OpResult.OK
         assert await manager.toggle_pause(state.room_id, 1) is OpResult.OK
@@ -593,6 +602,7 @@ async def test_skip_plays_only_start_cue_for_new_phase() -> None:
     manager = RoomManager(default_plan=PhasePlan(10, 2, 4, 2), voice_manager=voice)
     state, _ = await _spawn_room(manager, creator=1)
     state.guild_id = 1234
+    _claim_voice_ownership(manager, state)
     try:
         assert await manager.skip(state.room_id, 1) is OpResult.OK
         # WORK → SHORT_BREAK after one skip with no completed work.
@@ -611,6 +621,7 @@ async def test_natural_phase_end_plays_end_alarm_start_trio() -> None:
     manager = RoomManager(default_plan=PhasePlan(10, 2, 4, 2), voice_manager=voice)
     state, _ = await _spawn_room(manager, creator=1)
     state.guild_id = 1234
+    _claim_voice_ownership(manager, state)
     await manager.join(state.room_id, 1, task="focus")
     try:
         await manager._handle_phase_end(state)
@@ -633,6 +644,7 @@ async def test_long_break_transition_uses_long_break_clips() -> None:
     manager = RoomManager(default_plan=PhasePlan(10, 2, 4, 1), voice_manager=voice)
     state, _ = await _spawn_room(manager, creator=1)
     state.guild_id = 1234
+    _claim_voice_ownership(manager, state)
     await manager.join(state.room_id, 1)
     # ``long_break_every=1`` means the first WORK completion goes straight
     # to LONG_BREAK.
@@ -651,6 +663,7 @@ async def test_owner_end_plays_end_cue_then_disconnects() -> None:
     manager = RoomManager(default_plan=PhasePlan(10, 2, 4, 2), voice_manager=voice)
     state, _ = await _spawn_room(manager, creator=1)
     state.guild_id = 1234
+    _claim_voice_ownership(manager, state)
     await manager.end(state.room_id, reason="owner_ended")
     cues = _played_clip_names(voice)
     assert "end" in cues
@@ -663,6 +676,7 @@ async def test_auto_empty_end_plays_auto_end_cue() -> None:
     manager = RoomManager(default_plan=PhasePlan(10, 2, 4, 2), voice_manager=voice)
     state, _ = await _spawn_room(manager, creator=1)
     state.guild_id = 1234
+    _claim_voice_ownership(manager, state)
     await manager.end(state.room_id, reason="auto_empty")
     cues = _played_clip_names(voice)
     assert "auto-end" in cues
@@ -676,6 +690,7 @@ async def test_background_end_reasons_play_no_cue() -> None:
     manager = RoomManager(default_plan=PhasePlan(10, 2, 4, 2), voice_manager=voice)
     state, _ = await _spawn_room(manager, creator=1)
     state.guild_id = 1234
+    _claim_voice_ownership(manager, state)
     await manager.end(state.room_id, reason="superseded")
     assert _played_clip_names(voice) == []
     voice.disconnect.assert_awaited_once_with(1234)
@@ -706,6 +721,7 @@ async def test_maybe_play_one_minute_cue_skipped_when_already_played() -> None:
     )
     state, _ = await _spawn_room(manager, creator=1)
     state.guild_id = 999
+    _claim_voice_ownership(manager, state)
     state.one_minute_cue_played = True
     try:
         assert await manager._maybe_play_one_minute_cue(state) is False
@@ -722,6 +738,7 @@ async def test_maybe_play_one_minute_cue_skipped_when_phase_just_started() -> No
     manager = RoomManager(default_plan=plan, voice_manager=voice)
     state, _ = await _spawn_room(manager, creator=1)
     state.guild_id = 999
+    _claim_voice_ownership(manager, state)
     # ``phase_started_at`` is fresh from ``_spawn_room`` → remaining ≫ 60.
     try:
         assert await manager._maybe_play_one_minute_cue(state) is False
@@ -737,6 +754,7 @@ async def test_maybe_play_one_minute_cue_fires_in_final_minute() -> None:
     manager = RoomManager(default_plan=plan, voice_manager=voice)
     state, _ = await _spawn_room(manager, creator=1)
     state.guild_id = 999
+    _claim_voice_ownership(manager, state)
     # Wind the clock forward so only 30s remain in the work phase.
     state.phase_started_at = datetime.now(UTC) - timedelta(
         seconds=plan.work_seconds - 30
@@ -759,6 +777,7 @@ async def test_maybe_play_one_minute_cue_skipped_when_phase_already_done() -> No
     manager = RoomManager(default_plan=plan, voice_manager=voice)
     state, _ = await _spawn_room(manager, creator=1)
     state.guild_id = 999
+    _claim_voice_ownership(manager, state)
     state.phase_started_at = datetime.now(UTC) - timedelta(
         seconds=plan.work_seconds + 5
     )
@@ -779,6 +798,7 @@ async def test_phase_loop_plays_room_start_cues_on_init() -> None:
     manager = RoomManager(default_plan=PhasePlan(60, 30, 90, 4), voice_manager=voice)
     state, _ = await _spawn_room(manager, creator=1)
     state.guild_id = 999
+    _claim_voice_ownership(manager, state)
 
     task = asyncio.create_task(manager._run_phase_loop(state))
     # Poll for the prelude to finish — far cheaper than guessing how many
@@ -918,6 +938,31 @@ async def test_toggle_voice_connect_then_disconnect() -> None:
 
 
 @pytest.mark.asyncio
+async def test_toggle_voice_rejects_when_other_room_owns_guild_voice() -> None:
+    voice_mgr = MagicMock()
+    voice_mgr.is_connected = MagicMock(return_value=True)
+    voice_mgr.connect = AsyncMock(return_value=True)
+    voice_mgr.disconnect = AsyncMock()
+    voice_mgr.play_clip = AsyncMock(return_value=True)
+    manager = RoomManager(default_plan=PhasePlan(10, 2, 4, 2), voice_manager=voice_mgr)
+    owner_room, _ = await _spawn_room(manager, creator=1, channel_id=9001)
+    other_room, _ = await _spawn_room(manager, creator=2, channel_id=9002)
+    owner_room.guild_id = 999
+    other_room.guild_id = 999
+    _claim_voice_ownership(manager, owner_room)
+    try:
+        result = await manager.toggle_voice(
+            other_room.room_id, 2, voice_channel=MagicMock()
+        )
+        assert result is OpResult.VOICE_UNAVAILABLE
+        voice_mgr.disconnect.assert_not_awaited()
+        voice_mgr.connect.assert_not_awaited()
+    finally:
+        await manager.end(owner_room.room_id, reason="test")
+        await manager.end(other_room.room_id, reason="test")
+
+
+@pytest.mark.asyncio
 async def test_room_end_disconnects_voice() -> None:
     voice_mgr = MagicMock()
     voice_mgr.is_connected = MagicMock(return_value=True)
@@ -928,8 +973,27 @@ async def test_room_end_disconnects_voice() -> None:
     manager = RoomManager(default_plan=PhasePlan(10, 2, 4, 2), voice_manager=voice_mgr)
     state, _ = await _spawn_room(manager, creator=1)
     state.guild_id = 7777
+    _claim_voice_ownership(manager, state)
     await manager.end(state.room_id, reason="owner_ended")
     voice_mgr.disconnect.assert_awaited_once_with(7777)
+
+
+@pytest.mark.asyncio
+async def test_room_end_does_not_disconnect_voice_owned_by_other_room() -> None:
+    voice_mgr = MagicMock()
+    voice_mgr.is_connected = MagicMock(return_value=True)
+    voice_mgr.disconnect = AsyncMock()
+    voice_mgr.play_clip = AsyncMock(return_value=True)
+    manager = RoomManager(default_plan=PhasePlan(10, 2, 4, 2), voice_manager=voice_mgr)
+    owner_room, _ = await _spawn_room(manager, creator=1, channel_id=7001)
+    other_room, _ = await _spawn_room(manager, creator=2, channel_id=7002)
+    owner_room.guild_id = 9001
+    other_room.guild_id = 9001
+    _claim_voice_ownership(manager, owner_room)
+
+    await manager.end(other_room.room_id, reason="owner_ended")
+
+    voice_mgr.disconnect.assert_not_awaited()
 
 
 @pytest.mark.asyncio
