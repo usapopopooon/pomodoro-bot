@@ -76,9 +76,11 @@ class VoiceManager:
                         return False
                 return True
             try:
-                # ``timeout`` shortens discord.py's default 60s budget so a
-                # bad voice gateway (e.g. close 4017) surfaces to the user
-                # in ~15s instead of a minute of silent waiting.
+                # ``timeout`` shortens discord.py's default 60s budget so
+                # a bad transient connect surfaces to the user in ~15s
+                # instead of a minute of silent waiting. ``reconnect`` is
+                # left at its default (True) so transient drops mid-
+                # session auto-recover.
                 client: discord.VoiceClient = await voice_channel.connect(
                     self_deaf=True, timeout=15.0
                 )

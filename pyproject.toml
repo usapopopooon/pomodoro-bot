@@ -4,9 +4,14 @@ version = "0.1.0"
 description = "Discord Pomodoro Bot"
 requires-python = "==3.12.*"
 dependencies = [
-    # ``[voice]`` pulls PyNaCl, which is required for the bot to push audio
-    # frames to a Discord voice channel.
-    "discord.py[voice]~=2.6.0",
+    # ``[voice]`` pulls PyNaCl for legacy XSalsa20 modes, but Discord now
+    # negotiates DAVE (Audio/Video End-to-End Encryption) on most voice
+    # connections — and refuses (close 4017) when the bot can't speak the
+    # protocol. discord.py 2.7+ added DAVE support via the ``davey``
+    # extension; pinning ``>=2.7`` and pulling ``davey`` directly is what
+    # makes voice actually work in 2025+.
+    "discord.py[voice]>=2.7.0",
+    "davey>=0.1.0",
     "SQLAlchemy~=2.0.0",
     "asyncpg~=0.30.0",
     "psycopg2-binary~=2.9.0",

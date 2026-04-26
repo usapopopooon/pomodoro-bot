@@ -125,9 +125,9 @@ async def test_connect_failure_force_disconnects_leftover_voice_client(
 
 
 @pytest.mark.asyncio
-async def test_connect_passes_short_timeout_to_voice_channel(tmp_path: Path) -> None:
-    """``timeout=15`` keeps a bad voice gateway from blocking the user
-    for a full minute.
+async def test_connect_passes_short_timeout(tmp_path: Path) -> None:
+    """``timeout=15`` keeps a transient connect failure from blocking the
+    user for the full 60-second default.
     """
     mgr = VoiceManager(voices_dir=tmp_path)
     channel = _stub_voice_channel(guild_id=42)
