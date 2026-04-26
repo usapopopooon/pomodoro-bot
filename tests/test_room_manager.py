@@ -555,6 +555,148 @@ async def test_end_by_owner_only_accepts_owner() -> None:
     assert manager.get(state.room_id) is None
 
 
+def _connected_voice_stub() -> MagicMock:
+    """Mocked VoiceManager that pretends to be connected and silently OKs plays."""
+    voice = MagicMock()
+    voice.is_connected = MagicMock(return_value=True)
+    voice.connect = AsyncMock(return_value=True)
+    voice.disconnect = AsyncMock()
+    voice.play_clip = AsyncMock(return_value=True)
+    return voice
+
+
+def _played_clip_names(voice: MagicMock) -> list[str]:
+    return [call.args[1] for call in voice.play_clip.await_args_list]
+
+
+@pytest.mark.asyncio
+async def test_pause_and_resume_emit_voice_cues() -> None:
+    voice = _connected_voice_stub()
+    manager = RoomManager(default_plan=PhasePlan(10, 2, 4, 2), voice_manager=voice)
+    state, _ = await _spawn_room(manager, creator=1)
+    state.guild_id = 1234
+    try:
+        assert await manager.toggle_pause(state.room_id, 1) is OpResult.OK
+        assert await manager.toggle_pause(state.room_id, 1) is OpResult.OK
+    finally:
+        await manager.end(state.room_id, reason="test")
+    # First press paused → ``pause``; second press resumed → ``resume``.
+    cues = _played_clip_names(voice)
+    assert cues[:2] == ["pause", "resume"]
+
+
+@pytest.mark.asyncio
+async def test_skip_plays_only_start_cue_for_new_phase() -> None:
+    """Skip is an interruption, not a natural end — no end-X / alarm trio."""
+    voice = _connected_voice_stub()
+    manager = RoomManager(default_plan=PhasePlan(10, 2, 4, 2), voice_manager=voice)
+    state, _ = await _spawn_room(manager, creator=1)
+    state.guild_id = 1234
+    try:
+        assert await manager.skip(state.room_id, 1) is OpResult.OK
+        # WORK → SHORT_BREAK after one skip with no completed work.
+        assert state.phase is Phase.SHORT_BREAK
+    finally:
+        await manager.end(state.room_id, reason="test")
+    cues = _played_clip_names(voice)
+    assert "start-break" in cues
+    assert "end-task" not in cues
+    assert "alarm" not in cues
+
+
+@pytest.mark.asyncio
+async def test_natural_phase_end_plays_end_alarm_start_trio() -> None:
+    voice = _connected_voice_stub()
+    manager = RoomManager(default_plan=PhasePlan(10, 2, 4, 2), voice_manager=voice)
+    state, _ = await _spawn_room(manager, creator=1)
+    state.guild_id = 1234
+    await manager.join(state.room_id, 1, task="focus")
+    try:
+        await manager._handle_phase_end(state)
+        assert state.phase is Phase.SHORT_BREAK
+    finally:
+        await manager.end(state.room_id, reason="test")
+    cues = _played_clip_names(voice)
+    # The trio for WORK→SHORT_BREAK, in order, before any ``end`` cue from
+    # the cleanup ``manager.end(reason="test")`` (which doesn't emit one).
+    end_idx = cues.index("end-task")
+    alarm_idx = cues.index("alarm", end_idx)
+    start_idx = cues.index("start-break", alarm_idx)
+    assert end_idx < alarm_idx < start_idx
+
+
+@pytest.mark.asyncio
+async def test_long_break_transition_uses_long_break_clips() -> None:
+    """Confirm WORK→LONG_BREAK uses the dedicated long-break start clip."""
+    voice = _connected_voice_stub()
+    manager = RoomManager(default_plan=PhasePlan(10, 2, 4, 1), voice_manager=voice)
+    state, _ = await _spawn_room(manager, creator=1)
+    state.guild_id = 1234
+    await manager.join(state.room_id, 1)
+    # ``long_break_every=1`` means the first WORK completion goes straight
+    # to LONG_BREAK.
+    try:
+        await manager._handle_phase_end(state)
+        assert state.phase is Phase.LONG_BREAK
+    finally:
+        await manager.end(state.room_id, reason="test")
+    cues = _played_clip_names(voice)
+    assert "start-long-break" in cues
+
+
+@pytest.mark.asyncio
+async def test_owner_end_plays_end_cue_then_disconnects() -> None:
+    voice = _connected_voice_stub()
+    manager = RoomManager(default_plan=PhasePlan(10, 2, 4, 2), voice_manager=voice)
+    state, _ = await _spawn_room(manager, creator=1)
+    state.guild_id = 1234
+    await manager.end(state.room_id, reason="owner_ended")
+    cues = _played_clip_names(voice)
+    assert "end" in cues
+    voice.disconnect.assert_awaited_once_with(1234)
+
+
+@pytest.mark.asyncio
+async def test_auto_empty_end_plays_auto_end_cue() -> None:
+    voice = _connected_voice_stub()
+    manager = RoomManager(default_plan=PhasePlan(10, 2, 4, 2), voice_manager=voice)
+    state, _ = await _spawn_room(manager, creator=1)
+    state.guild_id = 1234
+    await manager.end(state.room_id, reason="auto_empty")
+    cues = _played_clip_names(voice)
+    assert "auto-end" in cues
+    assert "end" not in cues
+
+
+@pytest.mark.asyncio
+async def test_background_end_reasons_play_no_cue() -> None:
+    """Superseded / bot_restart / shutdown / error close silently."""
+    voice = _connected_voice_stub()
+    manager = RoomManager(default_plan=PhasePlan(10, 2, 4, 2), voice_manager=voice)
+    state, _ = await _spawn_room(manager, creator=1)
+    state.guild_id = 1234
+    await manager.end(state.room_id, reason="superseded")
+    assert _played_clip_names(voice) == []
+    voice.disconnect.assert_awaited_once_with(1234)
+
+
+@pytest.mark.asyncio
+async def test_one_minute_cue_played_flag_resets_on_phase_advance() -> None:
+    """The phase loop replays the cue on each new phase, so the flag must
+    reset whenever the clock does.
+    """
+    manager = _manager()
+    state, _ = await _spawn_room(manager, creator=1)
+    state.one_minute_cue_played = True
+    state.advance_phase(count_completion=False)
+    assert state.one_minute_cue_played is False
+    # And explicit reset (e.g. owner pressed Reset).
+    state.one_minute_cue_played = True
+    state.reset_current_phase()
+    assert state.one_minute_cue_played is False
+    await manager.end(state.room_id, reason="test")
+
+
 @pytest.mark.asyncio
 async def test_toggle_voice_rejects_non_owner_and_dm_room() -> None:
     """Owner gate + guild-context gate.

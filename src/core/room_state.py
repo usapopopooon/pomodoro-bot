@@ -45,6 +45,12 @@ class RoomState:
     paused_accumulated: timedelta = field(default_factory=timedelta)
     completed_work_phases: int = 0
 
+    # Set to True once the ``one-minute-left`` voice cue has fired for the
+    # current phase, so the phase loop doesn't replay it on every refresh
+    # tick that lands inside the final 60 seconds. Reset alongside the
+    # phase clock in :meth:`reset_current_phase`.
+    one_minute_cue_played: bool = False
+
     # ``has_started`` gates the phase loop. ``/pomo`` creates a room with
     # ``has_started=False`` and shows the Control Panel; the owner presses
     # Start to flip this flag, which kicks off the actual timer.
@@ -108,6 +114,8 @@ class RoomState:
         self.phase_started_at = datetime.now(UTC)
         self.paused_at = None
         self.paused_accumulated = timedelta()
+        # Re-arm the one-minute-left cue so the *new* clock period plays it.
+        self.one_minute_cue_played = False
 
     def advance_phase(self, *, count_completion: bool) -> Phase:
         if count_completion and self.phase is Phase.WORK:

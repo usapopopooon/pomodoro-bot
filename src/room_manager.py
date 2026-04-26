@@ -17,6 +17,29 @@ from src.voice_manager import VoiceManager
 logger = logging.getLogger(__name__)
 
 
+# Voice-clip mappings — module-level so they're trivially overridable in
+# tests and don't pull state into the manager. ``one-minute-left`` /
+# ``alarm`` / ``pause`` / ``resume`` / ``connected`` are referenced directly
+# at the call sites since they don't depend on phase / reason.
+_START_CLIP: dict[Phase, str] = {
+    Phase.WORK: "start-task",
+    Phase.SHORT_BREAK: "start-break",
+    Phase.LONG_BREAK: "start-long-break",
+}
+_END_CLIP: dict[Phase, str] = {
+    Phase.WORK: "end-task",
+    Phase.SHORT_BREAK: "end-break",
+    Phase.LONG_BREAK: "end-long-break",
+}
+# Only user-actioned ends get an audible "this is the end" cue. Background
+# closures (superseded / bot_restart / shutdown / error) skip the cue —
+# nobody is around to hear it and we'd be racing the disconnect anyway.
+_END_REASON_CUE: dict[str, str] = {
+    "owner_ended": "end",
+    "auto_empty": "auto-end",
+}
+
+
 class OpResult(StrEnum):
     """Why a button action was accepted / rejected.
 
@@ -192,9 +215,15 @@ class RoomManager:
         if state.task_handle is not None and not state.task_handle.done():
             state.task_handle.cancel()
 
-        # Drop the voice connection (if any) before touching the DB so
-        # users hear the channel quiet down even if the DB write stalls.
+        # Voice cue first (so listeners hear "終了" before silence), then
+        # drop the connection. Background closures (superseded /
+        # bot_restart / shutdown / error) skip the cue — there's nobody
+        # waiting on the audio cue and we want the disconnect to be
+        # punchy.
         if self._voice is not None and state.guild_id is not None:
+            cue = _END_REASON_CUE.get(reason)
+            if cue is not None:
+                await self._play_cue(state, cue)
             await self._voice.disconnect(state.guild_id)
 
         async with async_session() as db:
@@ -419,6 +448,10 @@ class RoomManager:
         # Pause / resume is an in-place status change; edit the phase
         # message so the ⏸ marker appears or disappears right away.
         await self._refresh_phase_message(state)
+        # Voice cue follows the visual update. ``event_type`` matches the
+        # *new* state (we read it inside the lock before flipping), so
+        # ``"paused"`` → entering pause means play ``pause.wav``.
+        await self._play_cue(state, "pause" if event_type == "paused" else "resume")
         return OpResult.OK
 
     async def skip(self, room_id: UUID, user_id: int) -> OpResult:
@@ -443,6 +476,10 @@ class RoomManager:
         # Skip is a phase boundary — post a new phase message so the
         # channel history shows the transition.
         await self._post_phase_start_message(state)
+        # No "end-X" / "alarm" here: the user *interrupted* the phase
+        # rather than letting it finish, so announcing its end would feel
+        # disingenuous. Play only the start cue for the new phase.
+        await self._play_cue(state, _START_CLIP[state.phase])
         return OpResult.OK
 
     async def reset(self, room_id: UUID, user_id: int) -> OpResult:
@@ -544,6 +581,36 @@ class RoomManager:
     # Internals
     # ------------------------------------------------------------------
 
+    async def _play_cue(self, state: RoomState, clip: str) -> None:
+        """Best-effort voice cue. No-op when voice isn't connected.
+
+        Errors inside :meth:`VoiceManager.play_clip` are already swallowed
+        at that layer; this wrapper just hides the connection check so the
+        phase loop / button handlers don't repeat it.
+        """
+        if self._voice is None or state.guild_id is None:
+            return
+        if not self._voice.is_connected(state.guild_id):
+            return
+        await self._voice.play_clip(state.guild_id, clip)
+
+    async def _play_phase_transition_cues(
+        self,
+        state: RoomState,
+        *,
+        phase_just_ended: Phase,
+        next_phase: Phase,
+    ) -> None:
+        """``end-X`` → ``alarm`` → ``start-Y`` for natural phase transitions.
+
+        Sequenced rather than concurrent — Discord only allows one play per
+        voice client at a time, and we want listeners to hear them in
+        announcement order anyway.
+        """
+        await self._play_cue(state, _END_CLIP[phase_just_ended])
+        await self._play_cue(state, "alarm")
+        await self._play_cue(state, _START_CLIP[next_phase])
+
     async def _evict_from_other_rooms(
         self, user_id: int, *, except_room_id: UUID
     ) -> None:
@@ -559,15 +626,19 @@ class RoomManager:
         """Drive the phase message: post at phase boundaries, refresh the
         progress bar every ``self._refresh_seconds`` until the phase ends.
 
-        The loop sleeps for ``min(remaining, refresh_seconds)`` and wakes
-        early via ``state.wake_event`` on pause / skip / reset / plan
-        update. Those user actions are responsible for their own message
-        refresh outside the loop; the loop just handles periodic ticks
-        and natural phase ends.
+        The loop sleeps for ``min(remaining, refresh_seconds, until_60s)``
+        — the third bound exists so we wake exactly when one minute is
+        left and can play ``one-minute-left.wav`` once. Wake_event preempts
+        the sleep on pause / skip / reset / plan update; those user actions
+        own their own message refresh outside the loop.
         """
         try:
-            # Kick off with the initial phase announcement.
+            # Visual first.
             await self._post_phase_start_message(state)
+            # Audio cues for the very start. Best-effort: if voice isn't
+            # connected (yet) these short-circuit instantly.
+            await self._play_cue(state, "start")
+            await self._play_cue(state, _START_CLIP[state.phase])
 
             while True:
                 if state.is_paused:
@@ -583,13 +654,23 @@ class RoomManager:
                     continue
 
                 sleep_for = min(remaining, self._refresh_seconds)
+                # If we haven't yet played the one-minute-left cue and the
+                # 60-second mark is still in the future, schedule a wake-up
+                # right at it so the cue lands precisely.
+                if not state.one_minute_cue_played and remaining > 60:
+                    sleep_for = min(sleep_for, remaining - 60)
                 try:
                     await asyncio.wait_for(state.wake_event.wait(), timeout=sleep_for)
                     state.wake_event.clear()
                     # User action — the handler already refreshed or posted
                     # a new message. Loop and re-evaluate.
                 except TimeoutError:
-                    # Periodic tick: just edit the bar in place.
+                    # Tick: maybe play the one-minute cue, then refresh bar.
+                    if not state.one_minute_cue_played:
+                        new_remaining = state.remaining().total_seconds()
+                        if 0 < new_remaining <= 60:
+                            state.one_minute_cue_played = True
+                            await self._play_cue(state, "one-minute-left")
                     await self._refresh_phase_message(state)
         except asyncio.CancelledError:
             logger.debug("phase loop cancelled room_id=%s", state.room_id)
@@ -616,19 +697,27 @@ class RoomManager:
                     duration_seconds=duration,
                 )
             state.advance_phase(count_completion=True)
+            next_phase = state.phase
             await svc.record_event(
                 db,
                 room_id=state.room_id,
                 event_type="phase_completed",
                 payload={
                     "from": phase_just_ended,
-                    "to": state.phase,
+                    "to": next_phase,
                     "duration_seconds": duration,
                     "credited_users": credited,
                 },
             )
 
+        # Visual update first so the channel reflects the new phase right
+        # away; audio cues then reinforce the transition.
         await self._post_phase_start_message(state)
+        await self._play_phase_transition_cues(
+            state,
+            phase_just_ended=phase_just_ended,
+            next_phase=next_phase,
+        )
 
     async def _post_phase_start_message(self, state: RoomState) -> None:
         """Post a new phase message and strip buttons off the old one.
