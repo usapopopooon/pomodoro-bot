@@ -786,6 +786,9 @@ async def test_room_end_disconnects_voice() -> None:
     voice_mgr = MagicMock()
     voice_mgr.is_connected = MagicMock(return_value=True)
     voice_mgr.disconnect = AsyncMock()
+    # ``owner_ended`` triggers an ``end.wav`` cue before disconnect, so
+    # ``play_clip`` must be an awaitable.
+    voice_mgr.play_clip = AsyncMock(return_value=True)
     manager = RoomManager(default_plan=PhasePlan(10, 2, 4, 2), voice_manager=voice_mgr)
     state, _ = await _spawn_room(manager, creator=1)
     state.guild_id = 7777
