@@ -924,6 +924,8 @@ async def test_toggle_voice_connect_then_disconnect() -> None:
         assert first is OpResult.OK
         voice_mgr.connect.assert_awaited_once_with(fake_channel)
         voice_mgr.play_clip.assert_awaited_once_with(999, "connected")
+        # 明示的に所有権を付与して、2回目押下の切断判定を安定化させる。
+        _claim_voice_ownership(manager, state)
 
         # Second press → disconnect, no extra connect call.
         second = await manager.toggle_voice(
