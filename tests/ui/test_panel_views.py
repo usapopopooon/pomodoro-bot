@@ -128,7 +128,16 @@ async def test_help_button_sends_ephemeral_usage_embed() -> None:
     # Every button family should appear in the cheat-sheet so nothing is a
     # mystery to a first-time user.
     joined = "\n".join(f.value for f in embed.fields)
-    for label in ("参加", "退出", "タスク", "統計", "開始", "時間設定", "通知", "終了"):
+    for label in (
+        "参加",
+        "退出",
+        "タスク",
+        "統計",
+        "開始",
+        "時間設定",
+        "メンション",
+        "終了",
+    ):
         assert label in joined
 
 

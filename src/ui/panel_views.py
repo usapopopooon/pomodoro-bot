@@ -213,7 +213,7 @@ class ControlPanelView(discord.ui.View):
 
     Layout:
         Row 0 (everyone):  [🙋 参加] [🚪 退出] [✍️ タスク] [📊 統計] [❓ 使い方]
-        Row 1 (owner):     [▶️ 開始] [⚙️ 時間設定] [🔔 通知] [🔊 ボイス] [🛑 終了]
+        Row 1 (owner):     [▶️ 開始] [⚙️ 時間設定] [🔔 メンション] [🔊 ボイス] [🛑 終了]
 
     ``has_started`` only affects the Start button's enabled state — the
     button itself is always present so the layout doesn't shift.
@@ -377,7 +377,7 @@ class ControlPanelView(discord.ui.View):
         )
 
     @discord.ui.button(
-        label="通知",
+        label="メンション",
         emoji="🔔",
         style=discord.ButtonStyle.secondary,
         custom_id="cp:notify",
@@ -397,7 +397,7 @@ class ControlPanelView(discord.ui.View):
             return
         await interaction.response.send_message(
             content=(
-                "**通知設定** — フェーズ開始時にスポイラー付きメンションを"
+                "**メンション設定** — フェーズ開始時にスポイラー付きメンションを"
                 "送るかどうかを切り替えます。"
             ),
             view=NotificationSettingsView(self._manager, self._room_id, state),

@@ -481,10 +481,12 @@ class RoomManager:
         # Skip is a phase boundary — post a new phase message so the
         # channel history shows the transition.
         await self._post_phase_start_message(state)
-        # No "end-X" / "alarm" here: the user *interrupted* the phase
-        # rather than letting it finish, so announcing its end would feel
-        # disingenuous. Play only the start cue for the new phase.
-        await self._play_cue(state, _START_CLIP[state.phase])
+        # User-initiated, so no alarm. Single announcement clip matching
+        # the natural-transition flavour (start-X for WORK→break, end-X
+        # for break→WORK).
+        await self._play_cue(
+            state, self._transition_announcement(previous, state.phase)
+        )
         return OpResult.OK
 
     async def reset(self, room_id: UUID, user_id: int) -> OpResult:
@@ -630,6 +632,20 @@ class RoomManager:
         await self._play_cue(state, "one-minute-left")
         return True
 
+    @staticmethod
+    def _transition_announcement(phase_just_ended: Phase, next_phase: Phase) -> str:
+        """Pick the single transition-announcement clip.
+
+        WORK ending → announce the starting break (``start-break`` /
+        ``start-long-break``). Break ending → announce the ending break
+        (``end-break`` / ``end-long-break``). The session never names the
+        work phase directly because ``start.wav`` covers it once at the
+        top.
+        """
+        if phase_just_ended is Phase.WORK:
+            return _START_CLIP[next_phase]
+        return _END_CLIP[phase_just_ended]
+
     async def _play_phase_transition_cues(
         self,
         state: RoomState,
@@ -637,22 +653,22 @@ class RoomManager:
         phase_just_ended: Phase,
         next_phase: Phase,
     ) -> None:
-        """Play the announcement trio for a natural phase transition.
+        """Play the announcement for a natural phase transition.
 
-        WORK → BREAK: ``alarm`` → ``end-task`` → ``start-X``. The alarm
-        fires first as the attention-grabbing "focus is over" ding before
-        listeners switch context.
+        WORK → BREAK: ``alarm`` → ``start-X``. The alarm fires first as
+        the attention-grabbing "focus is over" ding before listeners
+        switch context.
 
-        BREAK → WORK: ``end-X`` → ``start-task``. No alarm — break-end is
-        a calm "back to work" cue, an alarm here would feel jarring.
-
-        Sequenced rather than concurrent — Discord only allows one play
-        per voice client at a time anyway.
+        BREAK → WORK: ``end-X`` only — no alarm and no ``start-task``.
+        Break-end is a calm "back to work" cue, and ``start-task`` would
+        just double-announce something the listener already infers.
         """
         if phase_just_ended is Phase.WORK:
             await self._play_cue(state, "alarm")
-        await self._play_cue(state, _END_CLIP[phase_just_ended])
-        await self._play_cue(state, _START_CLIP[next_phase])
+        await self._play_cue(
+            state,
+            self._transition_announcement(phase_just_ended, next_phase),
+        )
 
     async def _evict_from_other_rooms(
         self, user_id: int, *, except_room_id: UUID
