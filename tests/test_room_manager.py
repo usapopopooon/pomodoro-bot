@@ -909,8 +909,9 @@ async def test_toggle_voice_requires_owner_in_voice_channel_to_connect() -> None
 async def test_toggle_voice_connect_then_disconnect() -> None:
     """Two presses: first connects + plays cue, second disconnects."""
     voice_mgr = MagicMock()
-    # Idle on first call, connected on the second so the toggle flips.
-    voice_mgr.is_connected = MagicMock(side_effect=[False, True])
+    # VC ownership判定を導入した後は 1回目に ``is_connected`` が
+    # 呼ばれない経路があるため、呼び出し回数に依存しない固定値にする。
+    voice_mgr.is_connected = MagicMock(return_value=True)
     voice_mgr.connect = AsyncMock(return_value=True)
     voice_mgr.disconnect = AsyncMock()
     voice_mgr.play_clip = AsyncMock(return_value=True)
