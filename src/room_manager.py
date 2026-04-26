@@ -85,11 +85,15 @@ class RoomManager:
         channel_id: int,
         created_by: int,
         plan: PhasePlan | None = None,
+        bot_user_id: int | None = None,
     ) -> RoomState:
         """Create a room in **setup** state.
 
         No phase loop is started; the caller is expected to post a Control
         Panel and later call :meth:`begin_phases` when the owner is ready.
+
+        ``bot_user_id`` is stamped on the row so multi-bot deploys can scope
+        startup reconciliation to their own rooms.
         """
         plan = plan or self._default_plan
         async with async_session() as db:
@@ -102,6 +106,7 @@ class RoomManager:
                 short_break_seconds=plan.short_break_seconds,
                 long_break_seconds=plan.long_break_seconds,
                 long_break_every=plan.long_break_every,
+                bot_user_id=bot_user_id,
             )
             await svc.record_event(
                 db,

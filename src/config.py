@@ -23,9 +23,14 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    # Single-token deploys keep using ``DISCORD_TOKEN``. Multi-bot deploys
+    # use ``DISCORD_TOKENS`` (CSV); both feed into ``discord_tokens`` after
+    # validation. ``discord_token`` exposes the first one for back-compat
+    # callers that want a scalar.
     discord_token: str = ""
     # NoDecode: pydantic-settings would otherwise try to JSON-decode the env
-    # string; we take raw input and split it in the validator below.
+    # strings; we take raw input and split each in the validators below.
+    discord_tokens: Annotated[list[str], NoDecode] = []
     discord_guild_ids: Annotated[list[int], NoDecode] = []
 
     database_url: str = DEFAULT_DATABASE_URL
@@ -55,10 +60,30 @@ class Settings(BaseSettings):
             return [int(s) for s in v.split(",") if s.strip()]
         return v
 
+    @field_validator("discord_tokens", mode="before")
+    @classmethod
+    def _split_tokens(cls, v: object) -> object:
+        if isinstance(v, str):
+            v = v.strip()
+            if not v:
+                return []
+            return [s.strip() for s in v.split(",") if s.strip()]
+        return v
+
     @model_validator(mode="after")
     def _validate_required(self) -> Settings:
-        if not self.discord_token or not self.discord_token.strip():
-            raise ValueError("DISCORD_TOKEN environment variable is required.")
+        # Either DISCORD_TOKEN (single) or DISCORD_TOKENS (csv) must be set.
+        # Normalise both into ``self.discord_tokens`` so downstream code only
+        # reads one place; ``self.discord_token`` keeps echoing the first.
+        if not self.discord_tokens and self.discord_token.strip():
+            self.discord_tokens = [self.discord_token.strip()]
+        elif self.discord_tokens and not self.discord_token.strip():
+            self.discord_token = self.discord_tokens[0]
+        if not self.discord_tokens:
+            raise ValueError(
+                "DISCORD_TOKEN (or DISCORD_TOKENS as CSV) environment "
+                "variable is required."
+            )
         return self
 
     @property

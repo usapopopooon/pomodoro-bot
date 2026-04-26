@@ -57,8 +57,9 @@ class PomodoroBot(commands.Bot):
 
     async def setup_hook(self) -> None:
         # DB-side reconciliation first: close orphan rooms so the channel
-        # uniqueness index is free for fresh panels.
-        orphans = await self._reconcile_orphaned_rooms()
+        # uniqueness index is free for fresh panels. Scoped to this bot's
+        # identity so multi-bot deployments don't trample each other.
+        orphans = await self._reconcile_orphaned_rooms(self._self_user_id())
 
         self.tree.add_command(
             discord.app_commands.Command(
@@ -139,6 +140,7 @@ class PomodoroBot(commands.Bot):
                 guild_id=interaction.guild.id if interaction.guild else None,
                 channel_id=channel.id,
                 created_by=interaction.user.id,
+                bot_user_id=self._self_user_id(),
             )
         except IntegrityError:
             # True concurrent race: another user hit /pomo in this same
@@ -167,16 +169,33 @@ class PomodoroBot(commands.Bot):
     # Startup reconciliation
     # ------------------------------------------------------------------
 
-    async def _reconcile_orphaned_rooms(self) -> list[svc.OrphanRoom]:
-        """Close any rooms left active by a previous process.
+    def _self_user_id(self) -> int | None:
+        """Return ``self.user.id`` if the gateway login already resolved it.
+
+        Returns ``None`` only in a narrow window during cold start before
+        ``setup_hook`` (or in tests with no real login). Callers tolerate
+        ``None`` — single-bot deploys never see it, and a missing ID just
+        means reconciliation falls back to the unscoped sweep.
+        """
+        return self.user.id if self.user is not None else None
+
+    async def _reconcile_orphaned_rooms(
+        self, bot_user_id: int | None
+    ) -> list[svc.OrphanRoom]:
+        """Close any rooms this bot left active in a previous run.
 
         Timer state lives in memory so we can't resume; mark rooms as
         ``bot_restart`` and return their channel / message ids so the caller
         can strip the dead panels' buttons. Without that step, clicking a
         button on an old panel shows "Interaction failed" with no context.
+
+        Scoped to ``bot_user_id`` when known: a multi-bot deploy must not
+        sweep peers' rooms.
         """
         async with async_session() as db:
-            orphans = await svc.mark_all_active_rooms_ended(db, reason="bot_restart")
+            orphans = await svc.mark_all_active_rooms_ended(
+                db, reason="bot_restart", bot_user_id=bot_user_id
+            )
         if orphans:
             logger.info("closed %d orphaned room(s) from previous run", len(orphans))
         return orphans

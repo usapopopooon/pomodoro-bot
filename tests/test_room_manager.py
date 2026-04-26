@@ -127,6 +127,31 @@ async def test_create_setup_persists_row_and_registers() -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_setup_stamps_bot_user_id_on_row() -> None:
+    """Multi-bot deploys rely on each row carrying the owning bot's ID.
+
+    Without it, startup reconciliation can't safely scope itself and would
+    sweep peers' rooms.
+    """
+    manager = _manager()
+    channel = _fake_channel(channel_id=4242)
+    state = await manager.create_setup(
+        guild_id=None,
+        channel_id=4242,
+        created_by=1,
+        bot_user_id=12345,
+    )
+    state.message = _fake_message(channel)
+    try:
+        async with async_session() as db:
+            row = await db.get(PomodoroRoom, state.room_id)
+            assert row is not None
+            assert row.bot_user_id == 12345
+    finally:
+        await manager.end(state.room_id, reason="test")
+
+
+@pytest.mark.asyncio
 async def test_begin_phases_flips_has_started_and_starts_loop_task() -> None:
     manager = _manager()
     state, _ = await _spawn_room(manager, creator=1, channel_id=999, running=False)

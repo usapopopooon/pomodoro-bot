@@ -32,6 +32,11 @@ class PomodoroRoom(Base):
         Index("ix_pomodoro_rooms_channel", "channel_id"),
         Index("ix_pomodoro_rooms_guild", "guild_id"),
         Index(
+            "ix_pomodoro_rooms_bot_active",
+            "bot_user_id",
+            postgresql_where="ended_at IS NULL",
+        ),
+        Index(
             "ux_pomodoro_rooms_channel_active",
             "channel_id",
             unique=True,
@@ -42,6 +47,11 @@ class PomodoroRoom(Base):
     id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True), primary_key=True, default=uuid4
     )
+    # Which bot identity owns this room. Nullable for the rare cold-start
+    # case where reconciliation runs before ``self.user`` is populated; in
+    # normal flow every newly-created room carries the ID so a multi-bot
+    # deploy can scope its reconciliation correctly.
+    bot_user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     guild_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     channel_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     # ``message_id`` is the panel message — set once we've posted it and used

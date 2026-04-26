@@ -53,8 +53,10 @@ async def create_room(
     short_break_seconds: int,
     long_break_seconds: int,
     long_break_every: int,
+    bot_user_id: int | None = None,
 ) -> PomodoroRoom:
     row = PomodoroRoom(
+        bot_user_id=bot_user_id,
         guild_id=guild_id,
         channel_id=channel_id,
         created_by=created_by,
@@ -143,24 +145,35 @@ async def get_active_room_in_channel(
     return result.scalar_one_or_none()
 
 
-async def get_active_rooms(session: AsyncSession) -> list[PomodoroRoom]:
-    rows = await session.scalars(
-        select(PomodoroRoom).where(PomodoroRoom.ended_at.is_(None))
-    )
+async def get_active_rooms(
+    session: AsyncSession, *, bot_user_id: int | None = None
+) -> list[PomodoroRoom]:
+    """Return active rooms, optionally scoped to a single bot identity.
+
+    Multi-bot deploys pass ``bot_user_id`` so a restart of bot A doesn't
+    sweep bot B's still-running rooms. Single-bot deploys leave it unset.
+    """
+    stmt = select(PomodoroRoom).where(PomodoroRoom.ended_at.is_(None))
+    if bot_user_id is not None:
+        stmt = stmt.where(PomodoroRoom.bot_user_id == bot_user_id)
+    rows = await session.scalars(stmt)
     return list(rows)
 
 
 async def mark_all_active_rooms_ended(
-    session: AsyncSession, *, reason: str
+    session: AsyncSession, *, reason: str, bot_user_id: int | None = None
 ) -> list[OrphanRoom]:
-    """End every active room; used on startup to clear orphaned rooms.
+    """End active rooms (optionally scoped to one bot); used on startup.
 
     In-memory state is lost on restart, so the room can't resume — close the
     rows explicitly so a fresh panel can be posted in the same channel. The
     returned ``OrphanRoom`` list lets the caller strip the dead panel
     messages' buttons so users don't hit "Interaction failed".
+
+    Pass ``bot_user_id`` when running alongside other bot instances on the
+    same DB so this reconciliation only touches its own orphaned rooms.
     """
-    rows = await get_active_rooms(session)
+    rows = await get_active_rooms(session, bot_user_id=bot_user_id)
     if not rows:
         return []
     orphans = [

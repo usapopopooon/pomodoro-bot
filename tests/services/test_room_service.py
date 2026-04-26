@@ -101,6 +101,34 @@ async def test_mark_all_active_rooms_ended_returns_orphan_info(
 
 
 @pytest.mark.asyncio
+async def test_mark_all_active_rooms_ended_scoped_to_bot_user_id(
+    db_session: AsyncSession,
+) -> None:
+    """Multi-bot deploys must only sweep rooms they own.
+
+    Bot A restarting should not retire bot B's still-running rooms.
+    """
+    bot_a = 1001
+    bot_b = 2002
+    a1 = await _mk_room(db_session, channel_id=10, bot_user_id=bot_a)
+    a2 = await _mk_room(db_session, channel_id=11, bot_user_id=bot_a)
+    b1 = await _mk_room(db_session, channel_id=20, bot_user_id=bot_b)
+
+    orphans = await svc.mark_all_active_rooms_ended(
+        db_session, reason="bot_restart", bot_user_id=bot_a
+    )
+    assert {o.room_id for o in orphans} == {a1.id, a2.id}
+
+    a1_row = await db_session.get(PomodoroRoom, a1.id)
+    a2_row = await db_session.get(PomodoroRoom, a2.id)
+    b1_row = await db_session.get(PomodoroRoom, b1.id)
+    assert a1_row is not None and a1_row.ended_at is not None
+    assert a2_row is not None and a2_row.ended_at is not None
+    # Bot B's room is still active — not touched by bot A's reconciliation.
+    assert b1_row is not None and b1_row.ended_at is None
+
+
+@pytest.mark.asyncio
 async def test_join_room_is_idempotent_and_updates_task(
     db_session: AsyncSession,
 ) -> None:

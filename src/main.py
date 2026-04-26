@@ -13,7 +13,7 @@ from src.database.engine import check_database_connection_with_retry
 
 logger = logging.getLogger(__name__)
 
-_bot: PomodoroBot | None = None
+_bots: list[PomodoroBot] = []
 
 
 def _setup_logging() -> None:
@@ -30,9 +30,10 @@ def _install_signal_handlers() -> None:
     loop = asyncio.get_running_loop()
 
     def _request_stop() -> None:
-        logger.info("stop signal received")
-        if _bot is not None:
-            asyncio.create_task(_bot.close(), name="bot-shutdown")
+        logger.info("stop signal received; closing %d bot(s)", len(_bots))
+        for bot in _bots:
+            if not bot.is_closed():
+                asyncio.create_task(bot.close(), name=f"bot-shutdown-{id(bot)}")
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         # Windows / restricted envs fall back to default handling.
@@ -43,21 +44,33 @@ def _install_signal_handlers() -> None:
         signal.signal(signal.SIGHUP, signal.SIG_IGN)
 
 
+async def _run_bot(token: str) -> None:
+    """Run one bot end-to-end; ensure ``close()`` even on exceptions."""
+    bot = PomodoroBot()
+    _bots.append(bot)
+    try:
+        await bot.start(token)
+    finally:
+        if not bot.is_closed():
+            await bot.close()
+
+
 async def _amain() -> None:
-    global _bot
     _setup_logging()
 
     if not await check_database_connection_with_retry():
         logger.error("database unreachable; aborting startup")
         raise SystemExit(1)
 
-    _bot = PomodoroBot()
     _install_signal_handlers()
-    try:
-        await _bot.start(settings.discord_token)
-    finally:
-        if not _bot.is_closed():
-            await _bot.close()
+
+    tokens = settings.discord_tokens
+    logger.info("starting %d bot instance(s)", len(tokens))
+
+    # Run every bot concurrently. ``return_exceptions`` so one bot's crash
+    # surfaces in the log without taking down the others — though in
+    # practice signal handlers will end the whole process anyway.
+    await asyncio.gather(*(_run_bot(t) for t in tokens), return_exceptions=True)
 
 
 def main() -> None:
