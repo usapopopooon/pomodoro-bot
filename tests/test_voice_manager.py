@@ -34,9 +34,12 @@ def _stub_voice_channel(
     """Mimic ``discord.VoiceChannel`` with a stubbed ``connect`` coroutine."""
     channel = MagicMock()
     channel.id = channel_id
-    channel.guild = SimpleNamespace(id=guild_id)
     if voice_client is None:
         voice_client = _stub_voice_client()
+    # ``guild.voice_client`` is what we read in the failure path to kill
+    # discord.py's runaway reconnect loop. Default to ``None`` so the
+    # cleanup is a no-op when nothing was left behind.
+    channel.guild = SimpleNamespace(id=guild_id, voice_client=None)
     channel.connect = AsyncMock(return_value=voice_client)
     return channel
 
@@ -98,6 +101,39 @@ async def test_disconnect_pops_state_and_calls_client(tmp_path: Path) -> None:
     await mgr.disconnect(42)
     assert mgr.is_connected(42) is False
     voice_client.disconnect.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_connect_failure_force_disconnects_leftover_voice_client(
+    tmp_path: Path,
+) -> None:
+    """Bug repro: a failed ``voice_channel.connect()`` leaves a partial
+    ``VoiceClient`` on the guild whose runner keeps retrying the handshake
+    forever. The manager must kill it so the loop actually stops after we
+    surface the error to the user.
+    """
+    leftover = MagicMock()
+    leftover.disconnect = AsyncMock()
+    channel = MagicMock()
+    channel.id = 100
+    channel.guild = SimpleNamespace(id=42, voice_client=leftover)
+    channel.connect = AsyncMock(side_effect=TimeoutError("simulated"))
+
+    mgr = VoiceManager(voices_dir=tmp_path)
+    assert await mgr.connect(channel) is False
+    leftover.disconnect.assert_awaited_once_with(force=True)
+
+
+@pytest.mark.asyncio
+async def test_connect_passes_short_timeout_to_voice_channel(tmp_path: Path) -> None:
+    """``timeout=15`` keeps a bad voice gateway from blocking the user
+    for a full minute.
+    """
+    mgr = VoiceManager(voices_dir=tmp_path)
+    channel = _stub_voice_channel(guild_id=42)
+    await mgr.connect(channel)
+    kwargs = channel.connect.await_args.kwargs
+    assert kwargs.get("timeout") == 15.0
 
 
 @pytest.mark.asyncio

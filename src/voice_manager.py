@@ -15,6 +15,7 @@ on the timer's hot path.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from pathlib import Path
 
@@ -75,8 +76,11 @@ class VoiceManager:
                         return False
                 return True
             try:
+                # ``timeout`` shortens discord.py's default 60s budget so a
+                # bad voice gateway (e.g. close 4017) surfaces to the user
+                # in ~15s instead of a minute of silent waiting.
                 client: discord.VoiceClient = await voice_channel.connect(
-                    self_deaf=True
+                    self_deaf=True, timeout=15.0
                 )
             except discord.ClientException:
                 # Already connected to a different voice in this guild; the
@@ -87,16 +91,36 @@ class VoiceManager:
                     guild_id,
                     voice_channel.id,
                 )
+                await self._kill_leftover_voice_client(voice_channel.guild)
                 return False
-            except (discord.HTTPException, TimeoutError):
+            except (discord.HTTPException, TimeoutError) as e:
                 logger.warning(
-                    "voice.connect failed guild=%s ch=%s",
+                    "voice.connect failed guild=%s ch=%s err=%r",
                     guild_id,
                     voice_channel.id,
+                    e,
                 )
+                # discord.py leaves a partial ``VoiceClient`` on the guild
+                # whose background runner keeps retrying the handshake
+                # forever. Force-disconnect it so the loop actually exits
+                # after we surface the error to the user.
+                await self._kill_leftover_voice_client(voice_channel.guild)
                 return False
             self._connections[guild_id] = client
             return True
+
+    async def _kill_leftover_voice_client(self, guild: discord.Guild) -> None:
+        """Force-disconnect any zombie VoiceClient on ``guild``.
+
+        Called from the failure paths in :meth:`connect` to neutralise the
+        runaway reconnect loop that discord.py would otherwise spin up in
+        the background after our exception bubbled out.
+        """
+        leftover = guild.voice_client
+        if leftover is None:
+            return
+        with contextlib.suppress(Exception):
+            await leftover.disconnect(force=True)
 
     async def disconnect(self, guild_id: int) -> None:
         """Leave the voice channel for ``guild_id`` if connected.
