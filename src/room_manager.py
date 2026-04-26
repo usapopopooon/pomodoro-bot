@@ -594,6 +594,23 @@ class RoomManager:
             return
         await self._voice.play_clip(state.guild_id, clip)
 
+    async def _maybe_play_one_minute_cue(self, state: RoomState) -> bool:
+        """Play ``one-minute-left.wav`` once if the phase is in its final 60s.
+
+        Pulled out of the loop body so it's directly unit-testable. Returns
+        True when the cue actually fired so callers can record it; False
+        when the call was a no-op (already played, too early, or phase
+        already finished).
+        """
+        if state.one_minute_cue_played:
+            return False
+        new_remaining = state.remaining().total_seconds()
+        if not (0 < new_remaining <= 60):
+            return False
+        state.one_minute_cue_played = True
+        await self._play_cue(state, "one-minute-left")
+        return True
+
     async def _play_phase_transition_cues(
         self,
         state: RoomState,
@@ -666,11 +683,7 @@ class RoomManager:
                     # a new message. Loop and re-evaluate.
                 except TimeoutError:
                     # Tick: maybe play the one-minute cue, then refresh bar.
-                    if not state.one_minute_cue_played:
-                        new_remaining = state.remaining().total_seconds()
-                        if 0 < new_remaining <= 60:
-                            state.one_minute_cue_played = True
-                            await self._play_cue(state, "one-minute-left")
+                    await self._maybe_play_one_minute_cue(state)
                     await self._refresh_phase_message(state)
         except asyncio.CancelledError:
             logger.debug("phase loop cancelled room_id=%s", state.room_id)

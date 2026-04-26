@@ -7,6 +7,7 @@ stubbed with ``SimpleNamespace`` + ``AsyncMock``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -695,6 +696,141 @@ async def test_one_minute_cue_played_flag_resets_on_phase_advance() -> None:
     state.reset_current_phase()
     assert state.one_minute_cue_played is False
     await manager.end(state.room_id, reason="test")
+
+
+@pytest.mark.asyncio
+async def test_maybe_play_one_minute_cue_skipped_when_already_played() -> None:
+    voice = _connected_voice_stub()
+    manager = RoomManager(
+        default_plan=PhasePlan(1500, 300, 900, 4), voice_manager=voice
+    )
+    state, _ = await _spawn_room(manager, creator=1)
+    state.guild_id = 999
+    state.one_minute_cue_played = True
+    try:
+        assert await manager._maybe_play_one_minute_cue(state) is False
+    finally:
+        await manager.end(state.room_id, reason="test")
+    # Cue must NOT have been played — flag short-circuits the helper.
+    assert "one-minute-left" not in _played_clip_names(voice)
+
+
+@pytest.mark.asyncio
+async def test_maybe_play_one_minute_cue_skipped_when_phase_just_started() -> None:
+    voice = _connected_voice_stub()
+    plan = PhasePlan(1500, 300, 900, 4)
+    manager = RoomManager(default_plan=plan, voice_manager=voice)
+    state, _ = await _spawn_room(manager, creator=1)
+    state.guild_id = 999
+    # ``phase_started_at`` is fresh from ``_spawn_room`` → remaining ≫ 60.
+    try:
+        assert await manager._maybe_play_one_minute_cue(state) is False
+        assert state.one_minute_cue_played is False
+    finally:
+        await manager.end(state.room_id, reason="test")
+
+
+@pytest.mark.asyncio
+async def test_maybe_play_one_minute_cue_fires_in_final_minute() -> None:
+    voice = _connected_voice_stub()
+    plan = PhasePlan(1500, 300, 900, 4)
+    manager = RoomManager(default_plan=plan, voice_manager=voice)
+    state, _ = await _spawn_room(manager, creator=1)
+    state.guild_id = 999
+    # Wind the clock forward so only 30s remain in the work phase.
+    state.phase_started_at = datetime.now(UTC) - timedelta(
+        seconds=plan.work_seconds - 30
+    )
+    try:
+        assert await manager._maybe_play_one_minute_cue(state) is True
+        assert state.one_minute_cue_played is True
+    finally:
+        await manager.end(state.room_id, reason="test")
+    voice.play_clip.assert_any_await(999, "one-minute-left")
+
+
+@pytest.mark.asyncio
+async def test_maybe_play_one_minute_cue_skipped_when_phase_already_done() -> None:
+    """If the loop's wake-up landed past the phase end, the natural-end
+    handler will run instead — the helper must not double-fire here.
+    """
+    voice = _connected_voice_stub()
+    plan = PhasePlan(1500, 300, 900, 4)
+    manager = RoomManager(default_plan=plan, voice_manager=voice)
+    state, _ = await _spawn_room(manager, creator=1)
+    state.guild_id = 999
+    state.phase_started_at = datetime.now(UTC) - timedelta(
+        seconds=plan.work_seconds + 5
+    )
+    try:
+        assert await manager._maybe_play_one_minute_cue(state) is False
+        assert state.one_minute_cue_played is False
+    finally:
+        await manager.end(state.room_id, reason="test")
+
+
+@pytest.mark.asyncio
+async def test_phase_loop_plays_room_start_cues_on_init() -> None:
+    """Loop prelude: post message + ``start.wav`` + ``start-task.wav``.
+
+    Run the loop briefly, then cancel before its long sleep would expire.
+    """
+    voice = _connected_voice_stub()
+    manager = RoomManager(default_plan=PhasePlan(60, 30, 90, 4), voice_manager=voice)
+    state, _ = await _spawn_room(manager, creator=1)
+    state.guild_id = 999
+
+    task = asyncio.create_task(manager._run_phase_loop(state))
+    # Poll for the prelude to finish — far cheaper than guessing how many
+    # ``await`` boundaries the prelude crosses.
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 1.0
+    while (  # noqa: ASYNC110
+        loop.time() < deadline and voice.play_clip.await_count < 2
+    ):
+        await asyncio.sleep(0.01)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+    await manager.end(state.room_id, reason="test")
+
+    cues = _played_clip_names(voice)
+    assert cues[:2] == ["start", "start-task"]
+
+
+@pytest.mark.asyncio
+async def test_toggle_voice_returns_unavailable_when_no_voice_manager() -> None:
+    """RoomManager with ``voice_manager=None`` rejects toggle cleanly."""
+    manager = RoomManager(default_plan=PhasePlan(10, 2, 4, 2), voice_manager=None)
+    state, _ = await _spawn_room(manager, creator=1)
+    state.guild_id = 999
+    try:
+        result = await manager.toggle_voice(state.room_id, 1, voice_channel=MagicMock())
+        assert result is OpResult.VOICE_UNAVAILABLE
+    finally:
+        await manager.end(state.room_id, reason="test")
+
+
+@pytest.mark.asyncio
+async def test_toggle_voice_returns_unavailable_when_dial_fails() -> None:
+    """Discord refused to add us to the VC → surface as VOICE_UNAVAILABLE.
+
+    No ``connected.wav`` should fire because the connection never landed.
+    """
+    voice = MagicMock()
+    voice.is_connected = MagicMock(return_value=False)
+    voice.connect = AsyncMock(return_value=False)
+    voice.disconnect = AsyncMock()
+    voice.play_clip = AsyncMock(return_value=True)
+    manager = RoomManager(default_plan=PhasePlan(10, 2, 4, 2), voice_manager=voice)
+    state, _ = await _spawn_room(manager, creator=1)
+    state.guild_id = 999
+    try:
+        result = await manager.toggle_voice(state.room_id, 1, voice_channel=MagicMock())
+        assert result is OpResult.VOICE_UNAVAILABLE
+        voice.play_clip.assert_not_awaited()
+    finally:
+        await manager.end(state.room_id, reason="test")
 
 
 @pytest.mark.asyncio
