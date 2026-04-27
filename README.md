@@ -4,7 +4,7 @@
 
 複数人で同じタイマー(25 分作業 → 5 分休憩)を共有できる Discord ポモドーロ Bot。スラッシュコマンドは **`/pomo` の 1 個だけ**、残りはパネルのボタンで操作します。
 
-利用者向けの最小ガイド: [USAGE.md](USAGE.md)(Discord に貼れる短い版)。
+利用者向けの最小ガイド: [USAGE.md](USAGE.md)。
 
 ---
 
@@ -168,13 +168,3 @@ alembic upgrade head
 ## 技術スタック
 
 Python 3.12 / discord.py[voice] >=2.7 + davey(DAVE E2EE プロトコル — 無いと voice gateway が `4017` で切る)/ ffmpeg + libopus + libsodium / PostgreSQL 17 / SQLAlchemy 2.x async + asyncpg / Alembic / pydantic-settings / Docker Compose / Railway
-
-## トラブルシューティング
-
-| 症状 | 原因 / 対処 |
-|---|---|
-| `/pomo` が出ない | グローバル同期は最大 1 時間。`DISCORD_GUILD_IDS` で即時同期 |
-| ボタンが "Interaction failed" | Bot 再起動直後の古い Panel。`/pomo` で作り直し |
-| voice ログに `WebSocket closed with 4017` | `discord.py[voice]>=2.7` + `davey>=0.1.0` が入っているか確認(2.6 系は DAVE 未対応で必ず失敗) |
-| 🔊 押しても無音 | (1) Bot に `Connect` / `Speak` 権限 (2) `ffmpeg` がコンテナに入っているか (3) `voices/*.wav` が同梱されているか |
-| Railway で `localhost:5432 refused` | `DATABASE_URL` 未注入。Variables で `${{ Postgres.DATABASE_URL }}` を張る |
