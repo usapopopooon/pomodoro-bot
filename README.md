@@ -131,7 +131,7 @@ alembic/versions/…       # マイグレーション
 
 `voices/*.wav` を `🔊` 接続中のみ再生。同梱クリップ: `start` / `end` / `auto-end` / `alarm` / `connected` / `start-break` / `end-break` / `start-long-break` / `end-long-break` / `pause` / `resume` / `one-minute-left`。WORK→休憩 は `alarm + start-X`、休憩→WORK は `end-X` 単発のミニマル設計。
 
-クレジット: [VOICEVOX](https://voicevox.hiroshiba.jp/) / [VOICEVOX:ずんだもん](https://zunko.jp/)。VOICEVOX 規約に従い非営利・個人利用の範囲で。
+クレジット: [VOICEVOX](https://voicevox.hiroshiba.jp/) / [VOICEVOX:ずんだもん](https://zunko.jp/)。
 
 ---
 
