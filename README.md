@@ -83,7 +83,7 @@ alembic/versions/…       # マイグレーション
 
 ### 音声(VOICEVOX:ずんだもん)
 
-`voices/*.wav` を `🔊` 接続中のみ再生。同梱クリップ: `start` / `end` / `auto-end` / `alarm` / `connected` / `start-break` / `end-break` / `start-long-break` / `end-long-break` / `pause` / `resume` / `one-minute-left`。フェーズ境界は WORK→休憩 が `alarm + start-X`、休憩→WORK が `alarm + end-X`。
+`voices/*.wav` を `🔊` 接続中のみ再生。同梱クリップ: `start` / `end` / `auto-end` / `alarm` / `connected` / `start-task` / `start-break` / `end-break` / `start-long-break` / `end-long-break` / `pause` / `resume` / `one-minute-left`。フェーズ境界は WORK→休憩 が `alarm + start-X`、休憩→WORK が `alarm + end-X + start-task`。
 
 クレジット: [VOICEVOX](https://voicevox.hiroshiba.jp/) / [VOICEVOX:ずんだもん](https://zunko.jp/)。
 

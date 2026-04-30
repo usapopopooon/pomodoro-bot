@@ -636,8 +636,8 @@ async def test_natural_phase_end_plays_alarm_then_start_break() -> None:
 
 
 @pytest.mark.asyncio
-async def test_break_to_work_transition_plays_alarm_then_end_break() -> None:
-    """Break-end also rings the alarm so the boundary is unmissable."""
+async def test_break_to_work_transition_plays_alarm_end_then_start_task() -> None:
+    """Break-end rings the alarm and then chains end-X → start-task."""
     voice = _connected_voice_stub()
     manager = RoomManager(default_plan=PhasePlan(10, 2, 4, 2), voice_manager=voice)
     state, _ = await _spawn_room(manager, creator=1)
@@ -656,7 +656,8 @@ async def test_break_to_work_transition_plays_alarm_then_end_break() -> None:
     cues = _played_clip_names(voice)
     alarm_idx = cues.index("alarm")
     end_idx = cues.index("end-break", alarm_idx)
-    assert alarm_idx < end_idx
+    start_idx = cues.index("start-task", end_idx)
+    assert alarm_idx < end_idx < start_idx
 
 
 @pytest.mark.asyncio

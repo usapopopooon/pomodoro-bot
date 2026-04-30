@@ -20,11 +20,12 @@ logger = logging.getLogger(__name__)
 # Voice-clip mappings — module-level so they're trivially overridable in
 # tests and don't pull state into the manager. ``one-minute-left`` /
 # ``alarm`` / ``pause`` / ``resume`` / ``connected`` are referenced directly
-# at the call sites since they don't depend on phase / reason. Only break
-# phases appear here: WORK→break uses the upcoming break's ``start-X``,
-# break→WORK uses the ending break's ``end-X``. The work phase itself is
-# only ever named once via ``start.wav`` at room start.
+# at the call sites since they don't depend on phase / reason. Natural
+# transitions chain alarm → ``_END_CLIP`` (if leaving a break) →
+# ``_START_CLIP[next_phase]``; the work phase only has an entry here so
+# the BREAK→WORK leg can announce "back to work" after end-X.
 _START_CLIP: dict[Phase, str] = {
+    Phase.WORK: "start-task",
     Phase.SHORT_BREAK: "start-break",
     Phase.LONG_BREAK: "start-long-break",
 }
@@ -639,9 +640,8 @@ class RoomManager:
 
         WORK ending → announce the starting break (``start-break`` /
         ``start-long-break``). Break ending → announce the ending break
-        (``end-break`` / ``end-long-break``). The session never names the
-        work phase directly because ``start.wav`` covers it once at the
-        top.
+        (``end-break`` / ``end-long-break``); on natural ends the
+        ``start-task`` follow-up is appended by the caller.
         """
         if phase_just_ended is Phase.WORK:
             return _START_CLIP[next_phase]
@@ -658,15 +658,18 @@ class RoomManager:
 
         ``alarm`` fires first on every natural boundary as the
         attention-grabbing "phase is over" ding, then the announcement
-        clip names what comes next: WORK → BREAK uses ``start-X``,
-        BREAK → WORK uses ``end-X``. The work phase itself is only ever
-        named once via ``start.wav`` at room start.
+        clip names what just happened. On BREAK → WORK we additionally
+        chain ``start-task`` so the listener gets a clean
+        "alarm → end-X → start-task" cue stack signalling the new work
+        phase has begun.
         """
         await self._play_cue(state, "alarm")
         await self._play_cue(
             state,
             self._transition_announcement(phase_just_ended, next_phase),
         )
+        if phase_just_ended is not Phase.WORK:
+            await self._play_cue(state, _START_CLIP[next_phase])
 
     async def _evict_from_other_rooms(
         self, user_id: int, *, except_room_id: UUID
