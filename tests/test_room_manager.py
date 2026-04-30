@@ -639,8 +639,8 @@ async def test_natural_phase_end_plays_alarm_then_start_break() -> None:
 
 
 @pytest.mark.asyncio
-async def test_break_to_work_transition_has_no_alarm() -> None:
-    """Break-end is a calm "back to work" cue — alarm would be jarring."""
+async def test_break_to_work_transition_plays_alarm_then_end_break() -> None:
+    """Break-end also rings the alarm so the boundary is unmissable."""
     voice = _connected_voice_stub()
     manager = RoomManager(default_plan=PhasePlan(10, 2, 4, 2), voice_manager=voice)
     state, _ = await _spawn_room(manager, creator=1)
@@ -657,13 +657,13 @@ async def test_break_to_work_transition_has_no_alarm() -> None:
     finally:
         await manager.end(state.room_id, reason="test")
     cues = _played_clip_names(voice)
-    assert "end-break" in cues
-    # ``start-task`` is now intentionally absent — break-end is the only
-    # announcement, and naming the work phase explicitly would be
-    # redundant given ``start.wav`` already covered the very first one.
+    alarm_idx = cues.index("alarm")
+    end_idx = cues.index("end-break", alarm_idx)
+    assert alarm_idx < end_idx
+    # ``start-task`` is still intentionally absent — naming the work
+    # phase explicitly would be redundant given ``start.wav`` already
+    # covered the very first one.
     assert "start-task" not in cues
-    # Crucially: no alarm on this side of the transition.
-    assert "alarm" not in cues
 
 
 @pytest.mark.asyncio

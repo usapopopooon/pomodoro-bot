@@ -655,16 +655,14 @@ class RoomManager:
     ) -> None:
         """Play the announcement for a natural phase transition.
 
-        WORK → BREAK: ``alarm`` → ``start-X``. The alarm fires first as
-        the attention-grabbing "focus is over" ding before listeners
-        switch context.
-
-        BREAK → WORK: ``end-X`` only — no alarm and no ``start-task``.
-        Break-end is a calm "back to work" cue, and ``start-task`` would
-        just double-announce something the listener already infers.
+        ``alarm`` fires first on every natural boundary as the
+        attention-grabbing "phase is over" ding, then the announcement
+        clip names what comes next: WORK → BREAK uses ``start-X``,
+        BREAK → WORK uses ``end-X``. ``start-task`` stays absent because
+        ``start.wav`` already covered the very first work phase and
+        re-announcing it would be redundant.
         """
-        if phase_just_ended is Phase.WORK:
-            await self._play_cue(state, "alarm")
+        await self._play_cue(state, "alarm")
         await self._play_cue(
             state,
             self._transition_announcement(phase_just_ended, next_phase),
