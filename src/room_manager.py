@@ -42,6 +42,18 @@ _END_REASON_CUE: dict[str, str] = {
 }
 
 
+def _voice_channel_at_capacity(channel: discord.VoiceChannel) -> bool:
+    """True when the bot can't fit into ``channel`` because of ``user_limit``.
+
+    Users with ``Manage Channels`` bypass the cap on Discord's side, so we
+    short-circuit when the bot's member has that permission. ``user_limit``
+    is ``0`` for "no limit".
+    """
+    if not channel.user_limit or len(channel.members) < channel.user_limit:
+        return False
+    return not channel.permissions_for(channel.guild.me).manage_channels
+
+
 class OpResult(StrEnum):
     """Why a button action was accepted / rejected.
 
@@ -60,6 +72,7 @@ class OpResult(StrEnum):
     OWNER_NOT_IN_VOICE = "owner_not_in_voice"
     NO_GUILD_CONTEXT = "no_guild_context"
     VOICE_UNAVAILABLE = "voice_unavailable"
+    VOICE_CHANNEL_FULL = "voice_channel_full"
 
 
 class RoomManager:
@@ -587,6 +600,11 @@ class RoomManager:
         # where to join. Surfaced to the UI as a clean "join a VC first".
         if voice_channel is None:
             return OpResult.OWNER_NOT_IN_VOICE
+        # Reject up front when the target VC is at ``user_limit``;
+        # otherwise discord.py's connect would just time out with no
+        # clear reason. ``manage_channels`` lets the bot bypass the cap.
+        if _voice_channel_at_capacity(voice_channel):
+            return OpResult.VOICE_CHANNEL_FULL
 
         connected = await self._voice.connect(voice_channel)
         if not connected:

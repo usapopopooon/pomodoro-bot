@@ -925,6 +925,70 @@ async def test_toggle_voice_requires_owner_in_voice_channel_to_connect() -> None
         await manager.end(state.room_id, reason="test")
 
 
+def _full_voice_channel_stub(
+    *, member_count: int, user_limit: int, manage_channels: bool
+) -> MagicMock:
+    channel = MagicMock()
+    channel.user_limit = user_limit
+    channel.members = [MagicMock() for _ in range(member_count)]
+    me = MagicMock()
+    perms = MagicMock()
+    perms.manage_channels = manage_channels
+    channel.permissions_for = MagicMock(return_value=perms)
+    channel.guild = MagicMock()
+    channel.guild.me = me
+    return channel
+
+
+@pytest.mark.asyncio
+async def test_toggle_voice_rejects_full_channel_without_manage_channels() -> None:
+    """``user_limit`` の閾値に達していたら接続を試みず即拒否。"""
+    voice_mgr = MagicMock()
+    voice_mgr.is_connected = MagicMock(return_value=False)
+    voice_mgr.connect = AsyncMock(return_value=True)
+    voice_mgr.disconnect = AsyncMock()
+    voice_mgr.play_clip = AsyncMock(return_value=True)
+    manager = RoomManager(default_plan=PhasePlan(10, 2, 4, 2), voice_manager=voice_mgr)
+    state, _ = await _spawn_room(manager, creator=1)
+    state.guild_id = 999
+    full_channel = _full_voice_channel_stub(
+        member_count=5, user_limit=5, manage_channels=False
+    )
+    try:
+        result = await manager.toggle_voice(
+            state.room_id, 1, voice_channel=full_channel
+        )
+        assert result is OpResult.VOICE_CHANNEL_FULL
+        voice_mgr.connect.assert_not_called()
+        voice_mgr.play_clip.assert_not_awaited()
+    finally:
+        await manager.end(state.room_id, reason="test")
+
+
+@pytest.mark.asyncio
+async def test_toggle_voice_full_channel_allowed_with_manage_channels() -> None:
+    """``Manage Channels`` 持ちの Bot は user_limit を突破できる。"""
+    voice_mgr = MagicMock()
+    voice_mgr.is_connected = MagicMock(return_value=True)
+    voice_mgr.connect = AsyncMock(return_value=True)
+    voice_mgr.disconnect = AsyncMock()
+    voice_mgr.play_clip = AsyncMock(return_value=True)
+    manager = RoomManager(default_plan=PhasePlan(10, 2, 4, 2), voice_manager=voice_mgr)
+    state, _ = await _spawn_room(manager, creator=1)
+    state.guild_id = 999
+    full_channel = _full_voice_channel_stub(
+        member_count=5, user_limit=5, manage_channels=True
+    )
+    try:
+        result = await manager.toggle_voice(
+            state.room_id, 1, voice_channel=full_channel
+        )
+        assert result is OpResult.OK
+        voice_mgr.connect.assert_awaited_once_with(full_channel)
+    finally:
+        await manager.end(state.room_id, reason="test")
+
+
 @pytest.mark.asyncio
 async def test_toggle_voice_connect_then_disconnect() -> None:
     """Two presses: first connects + plays cue, second disconnects."""

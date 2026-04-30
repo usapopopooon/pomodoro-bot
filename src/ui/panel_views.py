@@ -50,6 +50,9 @@ REJECT_MESSAGES: dict[OpResult, str] = {
     OpResult.VOICE_UNAVAILABLE: (
         "ボイスチャンネルに接続できませんでした。権限・接続状況をご確認ください。"
     ),
+    OpResult.VOICE_CHANNEL_FULL: (
+        "そのボイスチャンネルは人数制限に達しているため Bot が入れません。"
+    ),
 }
 
 
