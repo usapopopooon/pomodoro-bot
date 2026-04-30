@@ -49,7 +49,7 @@ class PomodoroBot(commands.Bot):
         super().__init__(
             command_prefix="!pomodoro-unused!",
             intents=intents,
-            activity=discord.Game(name="/pomo"),
+            activity=discord.Game(name="タイマーを回しています"),
         )
         # One VoiceManager per bot instance. Multi-bot deploys end up with
         # one connection slot per guild *per bot*, which is the whole point
