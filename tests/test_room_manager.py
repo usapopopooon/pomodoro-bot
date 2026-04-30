@@ -694,7 +694,8 @@ async def test_owner_end_plays_end_cue_then_disconnects() -> None:
 
 
 @pytest.mark.asyncio
-async def test_auto_empty_end_plays_auto_end_cue() -> None:
+async def test_auto_empty_end_plays_no_cue() -> None:
+    """Empty room → no listeners. Skip the end cue and just disconnect."""
     voice = _connected_voice_stub()
     manager = RoomManager(default_plan=PhasePlan(10, 2, 4, 2), voice_manager=voice)
     state, _ = await _spawn_room(manager, creator=1)
@@ -702,8 +703,8 @@ async def test_auto_empty_end_plays_auto_end_cue() -> None:
     _claim_voice_ownership(manager, state)
     await manager.end(state.room_id, reason="auto_empty")
     cues = _played_clip_names(voice)
-    assert "auto-end" in cues
     assert "end" not in cues
+    voice.disconnect.assert_awaited_once_with(1234)
 
 
 @pytest.mark.asyncio
@@ -865,8 +866,12 @@ async def test_toggle_voice_returns_unavailable_when_dial_fails() -> None:
     manager = RoomManager(default_plan=PhasePlan(10, 2, 4, 2), voice_manager=voice)
     state, _ = await _spawn_room(manager, creator=1)
     state.guild_id = 999
+    fake_channel = MagicMock()
+    fake_channel.user_limit = 0
     try:
-        result = await manager.toggle_voice(state.room_id, 1, voice_channel=MagicMock())
+        result = await manager.toggle_voice(
+            state.room_id, 1, voice_channel=fake_channel
+        )
         assert result is OpResult.VOICE_UNAVAILABLE
         voice.play_clip.assert_not_awaited()
     finally:
@@ -1003,6 +1008,7 @@ async def test_toggle_voice_connect_then_disconnect() -> None:
     state, _ = await _spawn_room(manager, creator=1)
     state.guild_id = 999
     fake_channel = MagicMock()
+    fake_channel.user_limit = 0
     try:
         # First press → connect + connected.wav.
         first = await manager.toggle_voice(state.room_id, 1, voice_channel=fake_channel)

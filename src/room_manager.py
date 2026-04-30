@@ -33,12 +33,11 @@ _END_CLIP: dict[Phase, str] = {
     Phase.SHORT_BREAK: "end-break",
     Phase.LONG_BREAK: "end-long-break",
 }
-# Only user-actioned ends get an audible "this is the end" cue. Background
-# closures (superseded / bot_restart / shutdown / error) skip the cue —
-# nobody is around to hear it and we'd be racing the disconnect anyway.
+# Only the owner-initiated end gets an audible cue. ``auto_empty`` would
+# play to an empty VC, and background closures (superseded / bot_restart /
+# shutdown / error) race the disconnect, so they all stay silent.
 _END_REASON_CUE: dict[str, str] = {
     "owner_ended": "end",
-    "auto_empty": "auto-end",
 }
 
 
