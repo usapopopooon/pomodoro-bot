@@ -20,14 +20,15 @@ logger = logging.getLogger(__name__)
 # Voice-clip mappings — module-level so they're trivially overridable in
 # tests and don't pull state into the manager. ``one-minute-left`` /
 # ``alarm`` / ``pause`` / ``resume`` / ``connected`` are referenced directly
-# at the call sites since they don't depend on phase / reason.
+# at the call sites since they don't depend on phase / reason. Only break
+# phases appear here: WORK→break uses the upcoming break's ``start-X``,
+# break→WORK uses the ending break's ``end-X``. The work phase itself is
+# only ever named once via ``start.wav`` at room start.
 _START_CLIP: dict[Phase, str] = {
-    Phase.WORK: "start-task",
     Phase.SHORT_BREAK: "start-break",
     Phase.LONG_BREAK: "start-long-break",
 }
 _END_CLIP: dict[Phase, str] = {
-    Phase.WORK: "end-task",
     Phase.SHORT_BREAK: "end-break",
     Phase.LONG_BREAK: "end-long-break",
 }
@@ -658,9 +659,8 @@ class RoomManager:
         ``alarm`` fires first on every natural boundary as the
         attention-grabbing "phase is over" ding, then the announcement
         clip names what comes next: WORK → BREAK uses ``start-X``,
-        BREAK → WORK uses ``end-X``. ``start-task`` stays absent because
-        ``start.wav`` already covered the very first work phase and
-        re-announcing it would be redundant.
+        BREAK → WORK uses ``end-X``. The work phase itself is only ever
+        named once via ``start.wav`` at room start.
         """
         await self._play_cue(state, "alarm")
         await self._play_cue(
@@ -692,9 +692,8 @@ class RoomManager:
         try:
             # Visual first.
             await self._post_phase_start_message(state)
-            # Single ``start`` cue at room start. Adding ``start-task`` on
-            # top would just double-announce ("開始します" → "タスクを開始
-            # します") for what is one event from the user's perspective.
+            # Single ``start`` cue at room start — the work phase is
+            # never named again afterwards.
             await self._play_cue(state, "start")
 
             while True:

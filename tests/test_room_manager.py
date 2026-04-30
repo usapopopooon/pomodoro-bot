@@ -597,7 +597,7 @@ async def test_pause_and_resume_emit_voice_cues() -> None:
 
 @pytest.mark.asyncio
 async def test_skip_plays_only_start_cue_for_new_phase() -> None:
-    """Skip is an interruption, not a natural end — no end-X / alarm trio."""
+    """Skip is an interruption, not a natural end — no alarm."""
     voice = _connected_voice_stub()
     manager = RoomManager(default_plan=PhasePlan(10, 2, 4, 2), voice_manager=voice)
     state, _ = await _spawn_room(manager, creator=1)
@@ -611,7 +611,6 @@ async def test_skip_plays_only_start_cue_for_new_phase() -> None:
         await manager.end(state.room_id, reason="test")
     cues = _played_clip_names(voice)
     assert "start-break" in cues
-    assert "end-task" not in cues
     assert "alarm" not in cues
 
 
@@ -630,12 +629,10 @@ async def test_natural_phase_end_plays_alarm_then_start_break() -> None:
         await manager.end(state.room_id, reason="test")
     cues = _played_clip_names(voice)
     # WORK→SHORT_BREAK: alarm jolts attention, ``start-break`` announces
-    # the new phase. ``end-task`` is intentionally absent — the alarm +
-    # start-break combo already conveys "work over, break beginning".
+    # the new phase.
     alarm_idx = cues.index("alarm")
     start_idx = cues.index("start-break", alarm_idx)
     assert alarm_idx < start_idx
-    assert "end-task" not in cues
 
 
 @pytest.mark.asyncio
@@ -660,10 +657,6 @@ async def test_break_to_work_transition_plays_alarm_then_end_break() -> None:
     alarm_idx = cues.index("alarm")
     end_idx = cues.index("end-break", alarm_idx)
     assert alarm_idx < end_idx
-    # ``start-task`` is still intentionally absent — naming the work
-    # phase explicitly would be redundant given ``start.wav`` already
-    # covered the very first one.
-    assert "start-task" not in cues
 
 
 @pytest.mark.asyncio
@@ -819,11 +812,7 @@ async def test_maybe_play_one_minute_cue_skipped_when_phase_already_done() -> No
 
 @pytest.mark.asyncio
 async def test_phase_loop_plays_room_start_cue_on_init() -> None:
-    """Loop prelude: post message + single ``start.wav``.
-
-    ``start-task`` would be redundant — "開始します" + "タスクを開始します"
-    just double-announces the same event from the user's POV.
-    """
+    """Loop prelude: post message + single ``start.wav``."""
     voice = _connected_voice_stub()
     manager = RoomManager(default_plan=PhasePlan(60, 30, 90, 4), voice_manager=voice)
     state, _ = await _spawn_room(manager, creator=1)
@@ -846,7 +835,6 @@ async def test_phase_loop_plays_room_start_cue_on_init() -> None:
 
     cues = _played_clip_names(voice)
     assert cues[:1] == ["start"]
-    assert "start-task" not in cues
 
 
 @pytest.mark.asyncio

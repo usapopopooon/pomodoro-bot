@@ -7,7 +7,7 @@ a single bot, this manager keeps the connection state keyed by guild id and
 serialises plays so a fresh clip can't talk over a still-playing one.
 
 The path layer is intentionally thin: callers pass a clip name (``"start"``
-/ ``"end-task"`` / etc.) and we resolve it against ``constants.VOICES_DIR``.
+/ ``"end-break"`` / etc.) and we resolve it against ``constants.VOICES_DIR``.
 Missing files are logged and skipped — voice is best-effort, never blocking
 on the timer's hot path.
 """
@@ -152,7 +152,7 @@ class VoiceManager:
         """Play ``voices/<clip_name>.wav`` if connected; return success.
 
         Waits for the clip to finish so callers can chain them naturally
-        (e.g. ``end-task`` → ``start-break``). If a clip is already playing
+        (e.g. ``alarm`` → ``start-break``). If a clip is already playing
         we stop it first — the newer cue is more relevant than the older.
         """
         client = self._connections.get(guild_id)
