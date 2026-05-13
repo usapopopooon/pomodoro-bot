@@ -4,6 +4,7 @@ from src.ui.embeds import (
     freeze_phase_content,
     help_embed,
     phase_content,
+    phase_ping_content,
     stats_embed,
 )
 from src.ui.panel_views import (
@@ -29,5 +30,6 @@ __all__ = [
     "freeze_phase_content",
     "help_embed",
     "phase_content",
+    "phase_ping_content",
     "stats_embed",
 ]

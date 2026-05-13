@@ -52,13 +52,13 @@ def _manager(*, every: int = 2) -> RoomManager:
 def _fake_channel(channel_id: int = 555) -> SimpleNamespace:
     """Channel stub whose ``send`` returns message-like objects.
 
-    ``RoomManager._post_phase_start_message`` stores ``channel.send(...)``'s
-    return value as ``state.last_phase_message`` and later reads ``.content``
-    off it for the freeze-on-transition edit. A plain ``AsyncMock`` returns a
-    ``MagicMock`` that auto-creates ``.content`` as another mock, which then
-    breaks ``str.split``. Returning a proper ``SimpleNamespace`` with a real
-    string mirrors Discord's actual Message shape closely enough for these
-    tests.
+    ``RoomManager._update_phase_message`` stores ``channel.send(...)``'s
+    return value as ``state.last_phase_message`` and ``RoomManager.end``
+    later reads ``.content`` off it to freeze the live timestamp. A plain
+    ``AsyncMock`` returns a ``MagicMock`` that auto-creates ``.content``
+    as another mock, which then breaks ``str.split``. Returning a proper
+    ``SimpleNamespace`` with a real string mirrors Discord's actual
+    Message shape closely enough for these tests.
     """
     channel = SimpleNamespace(id=channel_id)
 
@@ -416,7 +416,7 @@ async def test_skip_advances_cycle_without_crediting_user_pomodoros() -> None:
     state, channel = await _spawn_room(manager, creator=1)
     await manager.join(state.room_id, 1)
     # Ignore any sends that happened during setup — we only want to verify
-    # that skip itself posts a fresh phase message via channel.send.
+    # what skip itself triggers on the channel.
     channel.send.reset_mock()
     try:
         assert await manager.skip(state.room_id, 1) is OpResult.OK
@@ -427,7 +427,8 @@ async def test_skip_advances_cycle_without_crediting_user_pomodoros() -> None:
         async with async_session() as db:
             pomos = (await db.execute(select(Pomodoro))).scalars().all()
             assert pomos == []
-        # Skip is a phase boundary → new phase message posted.
+        # One send: the live phase message (first one for this room).
+        # The per-phase ping is off by default so it doesn't fire here.
         assert channel.send.await_count == 1
     finally:
         await manager.end(state.room_id, reason="test")
@@ -503,7 +504,8 @@ async def test_update_plan_owner_updates_room_cycle_and_resets_round() -> None:
             assert room.short_break_seconds == 7 * 60
             assert room.long_break_seconds == 20 * 60
             assert room.long_break_every == 3
-        # Update during running resets to WORK 1 → post fresh phase message.
+        # Update during running resets to WORK 1 → live phase message
+        # only. The WORK ping is off by default so no extra post.
         assert channel.send.await_count == 1
     finally:
         await manager.end(state.room_id, reason="test")
@@ -1139,26 +1141,27 @@ async def test_set_notify_owner_only_and_per_phase() -> None:
     state, _ = await _spawn_room(manager, creator=1)
     await manager.join(state.room_id, 2)
     try:
-        # Defaults are all on so no one misses transitions.
-        assert state.notify_work is True
-        assert state.notify_short_break is True
-        assert state.notify_long_break is True
+        # Defaults are all off so the channel stays quiet by default;
+        # owners opt in per phase via the 🔔 button.
+        assert state.notify_work is False
+        assert state.notify_short_break is False
+        assert state.notify_long_break is False
 
         # Non-owner cannot toggle.
         result = await manager.set_notify(
-            state.room_id, 2, phase=Phase.WORK, enabled=False
+            state.room_id, 2, phase=Phase.WORK, enabled=True
         )
         assert result is OpResult.NOT_OWNER
-        assert state.notify_work is True
+        assert state.notify_work is False
 
         # Owner toggles only the requested phase.
         result = await manager.set_notify(
-            state.room_id, 1, phase=Phase.SHORT_BREAK, enabled=False
+            state.room_id, 1, phase=Phase.SHORT_BREAK, enabled=True
         )
         assert result is OpResult.OK
-        assert state.notify_short_break is False
-        assert state.notify_work is True
-        assert state.notify_long_break is True
+        assert state.notify_short_break is True
+        assert state.notify_work is False
+        assert state.notify_long_break is False
     finally:
         await manager.end(state.room_id, reason="test")
 

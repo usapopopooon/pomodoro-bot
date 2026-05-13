@@ -436,10 +436,11 @@ class RoomManager:
                 state.wake_event.set()
 
         # During running, the plan update resets to WORK phase 1 — that's
-        # a semantic phase boundary, so post a fresh phase message (history
-        # in the channel shows the restart) instead of editing in place.
+        # a semantic phase boundary, so re-render the live phase message
+        # and fire the optional WORK-phase ping.
         if state.has_started:
-            await self._post_phase_start_message(state)
+            await self._update_phase_message(state)
+            await self._post_phase_ping(state)
         return OpResult.OK
 
     # ------------------------------------------------------------------
@@ -466,7 +467,7 @@ class RoomManager:
             state.wake_event.set()
         # Pause / resume is an in-place status change; edit the phase
         # message so the ⏸ marker appears or disappears right away.
-        await self._refresh_phase_message(state)
+        await self._update_phase_message(state)
         # Voice cue follows the visual update. ``event_type`` matches the
         # *new* state (we read it inside the lock before flipping), so
         # ``"paused"`` → entering pause means play ``pause.wav``.
@@ -497,9 +498,11 @@ class RoomManager:
                     payload={"from": previous, "to": state.phase},
                 )
             state.wake_event.set()
-        # Skip is a phase boundary — post a new phase message so the
-        # channel history shows the transition.
-        await self._post_phase_start_message(state)
+        # Skip is a phase boundary — re-render the live phase message
+        # (round counter + new phase header) and fire the optional ping
+        # for the entering phase.
+        await self._update_phase_message(state)
+        await self._post_phase_ping(state)
         # User-initiated, so no alarm. Single announcement clip matching
         # the natural-transition flavour (start-X for WORK→break, end-X
         # for break→WORK).
@@ -523,7 +526,7 @@ class RoomManager:
             await self._render_control_panel(state)
             state.wake_event.set()
         # Reset keeps the same phase; edit the bar back to 0% in place.
-        await self._refresh_phase_message(state)
+        await self._update_phase_message(state)
         return OpResult.OK
 
     async def set_notify(
@@ -732,8 +735,10 @@ class RoomManager:
         own their own message refresh outside the loop.
         """
         try:
-            # Visual first.
-            await self._post_phase_start_message(state)
+            # Visual first: send the single live phase message and fire
+            # the optional WORK-phase ping.
+            await self._update_phase_message(state)
+            await self._post_phase_ping(state)
             # Single ``start`` cue at room start — the work phase is
             # never named again afterwards.
             await self._play_cue(state, "start")
@@ -765,7 +770,7 @@ class RoomManager:
                 except TimeoutError:
                     # Tick: maybe play the one-minute cue, then refresh bar.
                     await self._maybe_play_one_minute_cue(state)
-                    await self._refresh_phase_message(state)
+                    await self._update_phase_message(state)
         except asyncio.CancelledError:
             logger.debug("phase loop cancelled room_id=%s", state.room_id)
             raise
@@ -805,30 +810,30 @@ class RoomManager:
             )
 
         # Visual update first so the channel reflects the new phase right
-        # away; audio cues then reinforce the transition.
-        await self._post_phase_start_message(state)
+        # away; the optional ping then notifies if enabled, and audio
+        # cues reinforce the transition.
+        await self._update_phase_message(state)
+        await self._post_phase_ping(state)
         await self._play_phase_transition_cues(
             state,
             phase_just_ended=phase_just_ended,
             next_phase=next_phase,
         )
 
-    async def _post_phase_start_message(self, state: RoomState) -> None:
-        """Post a new phase message and strip buttons off the old one.
+    async def _update_phase_message(self, state: RoomState) -> None:
+        """Render the live phase message — send once, edit in place forever.
 
-        Called at phase boundaries: natural end, skip, and plan-update
-        (which resets to WORK phase 1). Pause / reset edit the existing
-        message in place via ``_refresh_phase_message`` instead.
+        The phase message is a single channel post that lives for the
+        room's lifetime. Every event (phase boundary, periodic tick,
+        pause/resume, reset, skip, plan reset) edits the same message so
+        the channel doesn't fill with N near-identical announcements.
 
-        Ordering matters: we send the new message first and only strip
-        the old view after that succeeds. If the send fails (bot kicked,
-        permissions changed), the previous panel's buttons remain live so
-        the user isn't left with zero interactive controls.
-
-        Content is snapshotted under ``state.lock`` so concurrent mutations
-        can't tear the build, and ``last_phase_message`` is assigned back
-        under the lock too so a racing phase-end + skip don't leave the
-        pointer stale.
+        If the message has been deleted out from under us (user purge or
+        moderation), the edit raises ``NotFound`` — we transparently
+        re-send so the room keeps a live anchor. Per-phase pings are
+        handled by :meth:`_post_phase_ping`; this method intentionally
+        suppresses mentions on the progress message so edits don't try
+        (and silently fail) to re-ping users.
         """
         from src.ui.embeds import phase_content
         from src.ui.panel_views import PhasePanelView
@@ -839,22 +844,31 @@ class RoomManager:
 
         async with state.lock:
             content = phase_content(state)
-            previous_phase_message = state.last_phase_message
+            existing = state.last_phase_message
+
+        if existing is not None:
+            try:
+                await existing.edit(content=content)
+                return
+            except discord.NotFound:
+                async with state.lock:
+                    state.last_phase_message = None
+            except discord.HTTPException:
+                logger.warning("phase.edit failed room_id=%s", state.room_id)
+                return
 
         view = PhasePanelView(self, state.room_id)
         try:
-            # Explicit allowed_mentions: spoiler-wrapped ``||<@uid>||`` should
-            # still fire user pings, but never ping @everyone or roles.
             msg = await channel.send(
                 content=content,
                 view=view,
                 allowed_mentions=discord.AllowedMentions(
-                    users=True, everyone=False, roles=False
+                    users=False, everyone=False, roles=False
                 ),
             )
         except discord.HTTPException:
             logger.warning(
-                "phase.announce failed room_id=%s phase=%s",
+                "phase.send failed room_id=%s phase=%s",
                 state.room_id,
                 state.phase,
             )
@@ -862,38 +876,46 @@ class RoomManager:
 
         async with state.lock:
             state.last_phase_message = msg
+        # Persist the id so orphan reconciliation can freeze this message
+        # after a bot restart. Best-effort: if the DB write fails the room
+        # keeps running, the worst case is a forever-ticking ``<t:>`` line
+        # on the previous post after a restart.
+        async with async_session() as db:
+            await svc.set_room_phase_message(db, state.room_id, msg.id)
 
-        # Send succeeded — now it's safe to retire the old panel. Also
-        # strip the live ``<t:...:R>`` line: without this, Discord keeps
-        # re-rendering the old message as ``"X 分前"`` forever even after
-        # the phase has ended. Message gone / permissions changed — not fatal.
-        if previous_phase_message is not None:
-            from src.ui.embeds import freeze_phase_content
+    async def _post_phase_ping(self, state: RoomState) -> None:
+        """Post a short ping message at a phase boundary, when enabled.
 
-            with contextlib.suppress(discord.HTTPException):
-                await previous_phase_message.edit(
-                    content=freeze_phase_content(previous_phase_message.content),
-                    view=None,
-                )
-
-    async def _refresh_phase_message(self, state: RoomState) -> None:
-        """Edit the current phase message in place — bar tick or pause flip.
-
-        Used for periodic refreshes (every ``refresh_seconds``) and for
-        pause/reset, which don't need a new message in the channel
-        history. If there's no current phase message yet (pre-start) or
-        the edit fails, we just log and move on.
+        The phase progress message is edited in place across the whole
+        room, which means edits never re-fire user pings. To preserve
+        per-phase notifications opt-in, each phase boundary optionally
+        posts this small one-liner — gated by the per-phase notify
+        toggles on the Control Panel (work / short_break / long_break).
+        Mentions are spoiler-wrapped so the names stay hidden but the
+        ping still fires.
         """
-        from src.ui.embeds import phase_content
+        from src.ui.embeds import phase_ping_content
 
-        if state.last_phase_message is None:
+        channel = state.message.channel if state.message is not None else None
+        if channel is None:
             return
         async with state.lock:
-            content = phase_content(state)
+            content = phase_ping_content(state)
+        if content is None:
+            return
         try:
-            await state.last_phase_message.edit(content=content)
+            await channel.send(
+                content=content,
+                allowed_mentions=discord.AllowedMentions(
+                    users=True, everyone=False, roles=False
+                ),
+            )
         except discord.HTTPException:
-            logger.warning("phase.refresh failed room_id=%s", state.room_id)
+            logger.warning(
+                "phase.ping failed room_id=%s phase=%s",
+                state.room_id,
+                state.phase,
+            )
 
     async def _render_control_panel(self, state: RoomState) -> None:
         """Refresh the Control Panel message (participants, plan, status)."""

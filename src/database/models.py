@@ -57,6 +57,11 @@ class PomodoroRoom(Base):
     # ``message_id`` is the panel message — set once we've posted it and used
     # on restart to re-register the persistent view.
     message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # ``phase_message_id`` is the single live progress post that gets edited
+    # across the room's lifetime. Persisted so orphan reconciliation after
+    # a bot restart can fetch it and freeze the live ``<t:UNIX:R>`` line
+    # (otherwise Discord keeps re-rendering it as "X 分前" forever).
+    phase_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     created_by: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
     work_seconds: Mapped[int] = mapped_column(Integer, nullable=False)

@@ -131,33 +131,36 @@ def _progress_bar(ratio: float) -> str:
     )
 
 
-def _mention_prefix(state: RoomState) -> str:
-    """Spoiler-wrapped mention line for the current phase, or ``""``.
+def _round_number(state: RoomState) -> int:
+    """Cumulative round number (1-indexed) for the round currently being
+    served by the phase message.
 
-    Wrapping in ``||...||`` keeps the ping firing while hiding the usernames
-    behind a spoiler bar — so the message stays visually clean but still
-    notifies every participant.
+    During WORK we're *in the middle of* round N+1 where N is the count of
+    already-completed work phases. During a break (short or long), the
+    break belongs to the round whose WORK just finished, so the count is
+    the already-completed work phase count itself.
     """
-    if not state.participants:
-        return ""
-    if not state.notify_enabled_for(state.phase):
-        return ""
-    mentions = " ".join(f"<@{uid}>" for uid in state.participants)
-    return f"||{mentions}||"
+    if state.phase is Phase.WORK:
+        return state.completed_work_phases + 1
+    return max(1, state.completed_work_phases)
 
 
 def phase_content(state: RoomState, *, now: datetime | None = None) -> str:
-    """Phase message content.
+    """Phase message content — the single live-updated channel message.
 
     Layout (one item per line so narrow mobile viewports don't wrap):
-        [spoiler mentions]          ← optional, only when this phase's
-                                      notification flag is on
-        {icon} **{label}**          ← phase header, + pause marker
-        `{bar} {elapsed} / {total}` ← fixed-width monospace progress
-        終了 <t:{unix}:R>            ← client-side relative countdown;
-                                      omitted while paused (would tick
-                                      regardless) or once the phase is
-                                      done (would drift to "X ago")
+        {icon} **{label}** ・ ラウンド N   ← phase header + round counter,
+                                            + pause marker on pause
+        `{bar} {elapsed} / {total}`        ← fixed-width monospace progress
+        終了 <t:{unix}:R>                   ← client-side relative countdown;
+                                            omitted while paused (would tick
+                                            regardless) or once the phase is
+                                            done (would drift to "X ago")
+
+    Mentions are posted as a separate ping message via
+    :func:`phase_ping_content` — the progress message itself is edited in
+    place across the whole room, so embedding mentions here would only
+    fire pings on the very first send.
     """
     now = now or datetime.now(UTC)
     duration = state.phase_duration_seconds
@@ -168,8 +171,9 @@ def phase_content(state: RoomState, *, now: datetime | None = None) -> str:
     bar = _progress_bar(ratio)
     icon = _PHASE_ICON[state.phase]
     label = state.phase.label_ja
+    round_no = _round_number(state)
 
-    header = f"{icon} **{label}**"
+    header = f"{icon} **{label}** (ラウンド {round_no})"
     if state.is_paused:
         header += " ⏸ **一時停止中**"
 
@@ -180,10 +184,26 @@ def phase_content(state: RoomState, *, now: datetime | None = None) -> str:
         end_unix = int((now + timedelta(seconds=remaining)).timestamp())
         lines.append(f"終了 <t:{end_unix}:R>")
 
-    prefix = _mention_prefix(state)
-    if prefix:
-        lines.insert(0, prefix)
     return "\n".join(lines)
+
+
+def phase_ping_content(state: RoomState) -> str | None:
+    """Tiny notification message posted at phase boundaries when the user
+    has notifications enabled for the entering phase.
+
+    Returns ``None`` to mean "don't post anything" — no participants to
+    ping or the notify toggle is off for this phase. Mentions are
+    spoiler-wrapped so the names stay hidden behind a click while the
+    ping itself still fires.
+    """
+    if not state.participants:
+        return None
+    if not state.notify_enabled_for(state.phase):
+        return None
+    icon = _PHASE_ICON[state.phase]
+    label = state.phase.label_ja
+    mentions = " ".join(f"<@{uid}>" for uid in state.participants)
+    return f"{icon} **{label}** 開始 ||{mentions}||"
 
 
 # ---------------------------------------------------------------------------

@@ -279,15 +279,24 @@ class PomodoroBot(commands.Bot):
         return orphans
 
     async def _strip_orphan_panels(self, orphans: list[svc.OrphanRoom]) -> None:
-        """Edit each orphan panel message to remove its view.
+        """Edit each orphan's panel + phase message to halt live updates.
 
-        Best-effort: if the channel or message is gone, just move on — there's
-        nothing actionable left anyway.
+        Two things to clean up per orphan: the Control Panel (replaced with
+        the orphan notice + view stripped) and the live phase-progress
+        message (its ``<t:UNIX:R>`` line frozen, view stripped — otherwise
+        Discord keeps re-rendering it as "X 分前" forever even though
+        the timer is dead).
+
+        Best-effort: if the channel or any single message is gone, log
+        and move on. There's nothing actionable left anyway.
         """
         await self.wait_until_ready()
-        stripped = 0
+        from src.ui.embeds import freeze_phase_content
+
+        stripped_panels = 0
+        frozen_phases = 0
         for orphan in orphans:
-            if orphan.message_id is None:
+            if orphan.message_id is None and orphan.phase_message_id is None:
                 continue
             try:
                 channel = await self.fetch_channel(orphan.channel_id)
@@ -295,17 +304,39 @@ class PomodoroBot(commands.Bot):
                 continue
             if not isinstance(channel, discord.abc.Messageable):
                 continue
-            try:
-                message = await channel.fetch_message(orphan.message_id)
-                await message.edit(content=ORPHAN_PANEL_NOTICE, embed=None, view=None)
-                stripped += 1
-            except (discord.NotFound, discord.Forbidden):
-                continue
-            except discord.HTTPException:
-                logger.warning(
-                    "failed to strip orphan panel channel=%s message=%s",
-                    orphan.channel_id,
-                    orphan.message_id,
-                )
-        if stripped:
-            logger.info("stripped %d orphan panel(s)", stripped)
+            if orphan.message_id is not None:
+                try:
+                    message = await channel.fetch_message(orphan.message_id)
+                    await message.edit(
+                        content=ORPHAN_PANEL_NOTICE, embed=None, view=None
+                    )
+                    stripped_panels += 1
+                except (discord.NotFound, discord.Forbidden):
+                    pass
+                except discord.HTTPException:
+                    logger.warning(
+                        "failed to strip orphan panel channel=%s message=%s",
+                        orphan.channel_id,
+                        orphan.message_id,
+                    )
+            if orphan.phase_message_id is not None:
+                try:
+                    phase_msg = await channel.fetch_message(orphan.phase_message_id)
+                    await phase_msg.edit(
+                        content=freeze_phase_content(phase_msg.content), view=None
+                    )
+                    frozen_phases += 1
+                except (discord.NotFound, discord.Forbidden):
+                    pass
+                except discord.HTTPException:
+                    logger.warning(
+                        "failed to freeze orphan phase message channel=%s message=%s",
+                        orphan.channel_id,
+                        orphan.phase_message_id,
+                    )
+        if stripped_panels or frozen_phases:
+            logger.info(
+                "orphan cleanup: stripped %d panel(s), froze %d phase message(s)",
+                stripped_panels,
+                frozen_phases,
+            )

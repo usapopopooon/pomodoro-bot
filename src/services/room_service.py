@@ -36,6 +36,7 @@ class OrphanRoom:
     guild_id: int | None
     channel_id: int
     message_id: int | None
+    phase_message_id: int | None
 
 
 # ---------------------------------------------------------------------------
@@ -78,6 +79,17 @@ async def set_room_message(
     if row is None:
         return
     row.message_id = message_id
+    await session.commit()
+
+
+async def set_room_phase_message(
+    session: AsyncSession, room_id: UUID, phase_message_id: int
+) -> None:
+    """Persist the live phase-progress message id for orphan reconciliation."""
+    row = await session.get(PomodoroRoom, room_id)
+    if row is None:
+        return
+    row.phase_message_id = phase_message_id
     await session.commit()
 
 
@@ -182,6 +194,7 @@ async def mark_all_active_rooms_ended(
             guild_id=r.guild_id,
             channel_id=r.channel_id,
             message_id=r.message_id,
+            phase_message_id=r.phase_message_id,
         )
         for r in rows
     ]

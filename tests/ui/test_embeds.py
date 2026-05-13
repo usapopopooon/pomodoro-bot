@@ -18,6 +18,7 @@ from src.ui.embeds import (
     ended_embed,
     freeze_phase_content,
     phase_content,
+    phase_ping_content,
     stats_embed,
 )
 
@@ -187,29 +188,54 @@ def test_phase_content_drops_timestamp_once_phase_is_complete() -> None:
     assert "<t:" not in msg
 
 
-def test_phase_content_prepends_spoiler_mention_when_notify_enabled() -> None:
+def test_phase_content_never_includes_mentions() -> None:
+    # Mentions live in the separate ping message now — the live progress
+    # message is edit-only, and edits never re-fire user pings, so any
+    # mention here would be dead weight.
     state = _state(participants={1: "math", 2: None}, has_started=True)
-    msg = phase_content(state)
-    # First line is the spoiler-wrapped mention list — pings every
-    # participant but stays visually hidden behind the spoiler bar.
-    first = msg.split("\n", 1)[0]
-    assert first.startswith("||")
-    assert first.endswith("||")
-    assert "<@1>" in first
-    assert "<@2>" in first
-
-
-def test_phase_content_omits_mentions_when_notify_disabled_for_phase() -> None:
-    state = _state(phase=Phase.SHORT_BREAK, participants={1: "math"}, has_started=True)
-    state.notify_short_break = False
     msg = phase_content(state)
     assert "||" not in msg
     assert "<@1>" not in msg
+    assert "<@2>" not in msg
 
 
-def test_phase_content_omits_mentions_when_no_participants() -> None:
-    msg = phase_content(_state(participants={}, has_started=True))
-    assert "||" not in msg
+def test_phase_content_includes_cumulative_round_during_work() -> None:
+    state = _state(phase=Phase.WORK, completed=2, has_started=True)
+    msg = phase_content(state)
+    # During WORK#3 (completed=2 of finished work phases): we're on round 3.
+    assert "ラウンド 3" in msg
+
+
+def test_phase_content_round_during_break_reflects_just_finished_round() -> None:
+    state = _state(phase=Phase.SHORT_BREAK, completed=2, has_started=True)
+    msg = phase_content(state)
+    # Break following WORK#2 (completed=2): still round 2 — the break
+    # belongs to the round whose work just ended.
+    assert "ラウンド 2" in msg
+
+
+def test_phase_ping_content_returns_spoiler_mention_when_notify_enabled() -> None:
+    state = _state(participants={1: "math", 2: None}, has_started=True)
+    # Notify defaults to off — owners opt in per phase.
+    state.notify_work = True
+    ping = phase_ping_content(state)
+    assert ping is not None
+    assert "||" in ping
+    assert "<@1>" in ping
+    assert "<@2>" in ping
+    assert Phase.WORK.label_ja in ping
+
+
+def test_phase_ping_content_returns_none_when_notify_disabled() -> None:
+    # Notify defaults to off — this is the no-op case.
+    state = _state(phase=Phase.SHORT_BREAK, participants={1: "math"}, has_started=True)
+    assert phase_ping_content(state) is None
+
+
+def test_phase_ping_content_returns_none_when_no_participants() -> None:
+    state = _state(participants={}, has_started=True)
+    state.notify_work = True
+    assert phase_ping_content(state) is None
 
 
 # ---------------------------------------------------------------------------

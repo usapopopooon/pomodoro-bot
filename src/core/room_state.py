@@ -56,12 +56,15 @@ class RoomState:
     # Start to flip this flag, which kicks off the actual timer.
     has_started: bool = False
 
-    # Per-phase mention toggles. Mentions are wrapped in spoilers so they
-    # fire the notification but don't clutter the channel visually.
+    # Per-phase mention toggles. The phase progress message is edited in
+    # place across the room's lifetime — without a separate ping post,
+    # users wouldn't get a notification on phase boundaries. Defaulting
+    # these to off keeps the channel quiet by default; owners opt in per
+    # phase via the 🔔 button on the Control Panel.
     # Memory-only — resets on every ``/pomo``.
-    notify_work: bool = True
-    notify_short_break: bool = True
-    notify_long_break: bool = True
+    notify_work: bool = False
+    notify_short_break: bool = False
+    notify_long_break: bool = False
 
     participants: dict[int, ParticipantState] = field(default_factory=dict)
 
