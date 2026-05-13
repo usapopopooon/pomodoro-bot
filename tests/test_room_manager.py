@@ -411,7 +411,7 @@ async def test_reset_rejected_before_timer_started() -> None:
 
 
 @pytest.mark.asyncio
-async def test_skip_owner_advances_without_counting_completion() -> None:
+async def test_skip_advances_cycle_without_crediting_user_pomodoros() -> None:
     manager = _manager()
     state, channel = await _spawn_room(manager, creator=1)
     await manager.join(state.room_id, 1)
@@ -421,12 +421,32 @@ async def test_skip_owner_advances_without_counting_completion() -> None:
     try:
         assert await manager.skip(state.room_id, 1) is OpResult.OK
         assert state.phase is Phase.SHORT_BREAK
-        assert state.completed_work_phases == 0
+        # Cycle counter advances so the every-Nth long-break cadence is
+        # preserved, but the user's pomodoro stats are not credited.
+        assert state.completed_work_phases == 1
         async with async_session() as db:
             pomos = (await db.execute(select(Pomodoro))).scalars().all()
             assert pomos == []
         # Skip is a phase boundary → new phase message posted.
         assert channel.send.await_count == 1
+    finally:
+        await manager.end(state.room_id, reason="test")
+
+
+@pytest.mark.asyncio
+async def test_skipping_full_work_cycle_reaches_long_break() -> None:
+    """Default plan: long_break_every=2 → WORK / SB / WORK / LB via skips."""
+    manager = _manager()
+    state, _ = await _spawn_room(manager, creator=1)
+    await manager.join(state.room_id, 1)
+    try:
+        assert await manager.skip(state.room_id, 1) is OpResult.OK
+        assert state.phase is Phase.SHORT_BREAK
+        assert await manager.skip(state.room_id, 1) is OpResult.OK
+        assert state.phase is Phase.WORK
+        assert await manager.skip(state.room_id, 1) is OpResult.OK
+        assert state.phase is Phase.LONG_BREAK
+        assert state.completed_work_phases == 2
     finally:
         await manager.end(state.room_id, reason="test")
 

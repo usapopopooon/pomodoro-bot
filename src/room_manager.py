@@ -483,7 +483,12 @@ class RoomManager:
             return OpResult.NOT_YET_STARTED
         async with state.lock:
             previous = state.phase
-            state.advance_phase(count_completion=False)
+            # Skip advances the cycle counter so the every-Nth long-break
+            # cadence stays intact — otherwise a user who skips their way
+            # through WORK phases would never reach a long break. User
+            # pomodoro credit is separately gated in ``_handle_phase_end``,
+            # so skip still doesn't count toward stats.
+            state.advance_phase(count_completion=True)
             async with async_session() as db:
                 await svc.record_event(
                     db,
