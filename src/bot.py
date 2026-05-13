@@ -99,6 +99,73 @@ class PomodoroBot(commands.Bot):
     async def on_ready(self) -> None:
         logger.info("bot ready as %s (guilds=%d)", self.user, len(self.guilds))
 
+    async def on_voice_state_update(
+        self,
+        member: discord.Member,
+        before: discord.VoiceState,
+        after: discord.VoiceState,
+    ) -> None:
+        """End the room when the bot is the last one left in its VC.
+
+        Without this, the timer keeps ticking and audio cues fire into an
+        empty channel after the only human disconnects — wasted work and
+        a stranded bot. We watch for non-bot members leaving the channel
+        the bot is currently sitting in, and tear the room down as soon
+        as the human headcount hits zero.
+        """
+        if member.bot:
+            return
+        guild = member.guild
+        voice_client = guild.voice_client
+        if voice_client is None or not voice_client.is_connected():
+            return
+        bot_channel = voice_client.channel
+        if bot_channel is None:
+            return
+        # Only act when the member left (or was moved out of) the bot's VC.
+        # Mute/deafen toggles fire this event too but keep the same channel.
+        was_in_bot_channel = (
+            before.channel is not None and before.channel.id == bot_channel.id
+        )
+        still_in_bot_channel = (
+            after.channel is not None and after.channel.id == bot_channel.id
+        )
+        if not was_in_bot_channel or still_in_bot_channel:
+            return
+        if any(not m.bot for m in bot_channel.members):
+            return
+        ended_state = await self.room_manager.end_voice_room_if_any(
+            guild.id, reason="voice_empty"
+        )
+        if ended_state is None:
+            # No room claims this VC (orphan connection) — still drop it so
+            # the bot doesn't loiter.
+            await self.voice_manager.disconnect(guild.id)
+            return
+        await self._announce_voice_empty_shutdown(ended_state)
+
+    async def _announce_voice_empty_shutdown(self, state: object) -> None:
+        """Post a one-liner to the room's text channel explaining the auto-end.
+
+        The control panel embed is also rewritten with the same reason, but
+        that's an in-place edit users can miss if they've scrolled away.
+        A fresh channel message bumps the channel and makes the cause
+        unambiguous.
+        """
+        panel = getattr(state, "message", None)
+        channel = getattr(panel, "channel", None)
+        if channel is None:
+            return
+        try:
+            await channel.send(
+                "🔇 VC に誰もいなくなったので、ポモドーロを自動的に終了しました。"
+            )
+        except discord.HTTPException:
+            logger.warning(
+                "voice-empty notice send failed room_id=%s",
+                getattr(state, "room_id", None),
+            )
+
     async def close(self) -> None:
         active = len(self.room_manager.active_rooms())
         logger.info("shutting down: closing %d live rooms", active)

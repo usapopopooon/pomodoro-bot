@@ -80,6 +80,7 @@ def control_panel_embed(state: RoomState) -> discord.Embed:
 _REASON_JA: dict[str, str] = {
     "owner_ended": "オーナーが終了",
     "auto_empty": "参加者がいなくなったため自動終了",
+    "voice_empty": "VC に誰もいなくなったため自動終了",
     "superseded": "新しいパネルに置き換え",
     "bot_restart": "Bot 再起動",
     "shutdown": "Bot 停止",

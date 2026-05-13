@@ -559,6 +559,23 @@ class RoomManager:
         await self.end(room_id, reason="owner_ended")
         return OpResult.OK
 
+    async def end_voice_room_if_any(
+        self, guild_id: int, *, reason: str
+    ) -> RoomState | None:
+        """End whichever room currently owns the VC connection in ``guild_id``.
+
+        Returns the ended :class:`RoomState` (so the caller can post a
+        follow-up channel message), or ``None`` when no room claimed the
+        VC. Called from the bot's ``on_voice_state_update`` handler when
+        the bot is left alone in a voice channel — the timer can keep
+        ticking in memory but there's nobody listening, so we wind the
+        whole room down instead of just the audio.
+        """
+        room_id = self._voice_room_by_guild.get(guild_id)
+        if room_id is None:
+            return None
+        return await self.end(room_id, reason=reason)
+
     async def toggle_voice(
         self,
         room_id: UUID,

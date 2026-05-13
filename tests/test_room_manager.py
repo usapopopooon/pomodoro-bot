@@ -576,6 +576,30 @@ async def test_end_by_owner_only_accepts_owner() -> None:
     assert manager.get(state.room_id) is None
 
 
+@pytest.mark.asyncio
+async def test_end_voice_room_if_any_ends_the_owning_room() -> None:
+    voice = _connected_voice_stub()
+    manager = RoomManager(default_plan=PhasePlan(10, 2, 4, 2), voice_manager=voice)
+    state, _ = await _spawn_room(manager, creator=1)
+    state.guild_id = 4242
+    _claim_voice_ownership(manager, state)
+    ended = await manager.end_voice_room_if_any(4242, reason="voice_empty")
+    assert ended is state
+    assert manager.get(state.room_id) is None
+    # ``end`` is responsible for the VC disconnect on its own — verify the
+    # room teardown path actually fired it.
+    voice.disconnect.assert_awaited_with(4242)
+
+
+@pytest.mark.asyncio
+async def test_end_voice_room_if_any_is_noop_when_no_room_owns_vc() -> None:
+    voice = _connected_voice_stub()
+    manager = RoomManager(default_plan=PhasePlan(10, 2, 4, 2), voice_manager=voice)
+    ended = await manager.end_voice_room_if_any(9999, reason="voice_empty")
+    assert ended is None
+    voice.disconnect.assert_not_awaited()
+
+
 def _connected_voice_stub() -> MagicMock:
     """Mocked VoiceManager that pretends to be connected and silently OKs plays."""
     voice = MagicMock()
