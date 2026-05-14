@@ -203,7 +203,7 @@ def test_phase_content_includes_cumulative_round_during_work() -> None:
     state = _state(phase=Phase.WORK, completed=2, has_started=True)
     msg = phase_content(state)
     # During WORK#3 (completed=2 of finished work phases): we're on round 3.
-    assert "ラウンド 3" in msg
+    assert "ラウンド : 3" in msg
 
 
 def test_phase_content_round_during_break_reflects_just_finished_round() -> None:
@@ -211,7 +211,7 @@ def test_phase_content_round_during_break_reflects_just_finished_round() -> None
     msg = phase_content(state)
     # Break following WORK#2 (completed=2): still round 2 — the break
     # belongs to the round whose work just ended.
-    assert "ラウンド 2" in msg
+    assert "ラウンド : 2" in msg
 
 
 def test_phase_ping_content_returns_spoiler_mention_when_notify_enabled() -> None:

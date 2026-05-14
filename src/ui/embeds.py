@@ -173,7 +173,7 @@ def phase_content(state: RoomState, *, now: datetime | None = None) -> str:
     label = state.phase.label_ja
     round_no = _round_number(state)
 
-    header = f"{icon} **{label}** (ラウンド {round_no})"
+    header = f"{icon} **{label}** ( ラウンド : {round_no} )"
     if state.is_paused:
         header += " ⏸ **一時停止中**"
 
