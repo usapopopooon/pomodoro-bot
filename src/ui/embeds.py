@@ -12,6 +12,7 @@ Two surfaces:
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime, timedelta
 
 import discord
@@ -211,17 +212,32 @@ def phase_ping_content(state: RoomState) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+_BAR_LINE_RE = re.compile(r"^`[^`]* (\d+)分 / (\d+)分`$")
+
+
 def freeze_phase_content(content: str) -> str:
-    """Strip the live ``終了 <t:...:R>`` line from a past phase message.
+    """Freeze a live phase message: strip the ticking ``<t:...:R>`` line and
+    snap the progress bar to 100%.
 
     Discord re-renders ``<t:UNIX:R>`` on every view, which means a finished
-    phase keeps ticking as ``"X 分前"`` forever. When we transition away
-    from a phase (or end the room) we rewrite the old message without that
-    line so it freezes as historical text.
+    phase keeps ticking as ``"X 分前"`` forever. When we end the room we
+    rewrite the message without that line so it freezes as historical text.
+
+    Snapping the bar to full is purely cosmetic: when the owner ends the
+    room (or VC empties out) mid-phase, leaving a half-filled bar reads as
+    "this is still running". Filling it is a clearer "this is done now".
     """
-    return "\n".join(
-        line for line in content.split("\n") if not line.startswith("終了 <t:")
-    )
+    full_bar = PROGRESS_BAR_FILLED * PROGRESS_BAR_LENGTH
+    out: list[str] = []
+    for line in content.split("\n"):
+        if line.startswith("終了 <t:"):
+            continue
+        match = _BAR_LINE_RE.match(line)
+        if match is not None:
+            total = match.group(2)
+            line = f"`{full_bar} {total}分 / {total}分`"
+        out.append(line)
+    return "\n".join(out)
 
 
 def help_embed() -> discord.Embed:
