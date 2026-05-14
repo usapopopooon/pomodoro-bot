@@ -259,19 +259,16 @@ def test_freeze_phase_content_is_noop_when_no_timestamp() -> None:
     assert freeze_phase_content(msg) == msg
 
 
-def test_freeze_phase_content_snaps_bar_to_full_when_room_ends_mid_phase() -> None:
-    """Owner pressing 終了 mid-phase leaves a half-filled bar; freezing should
-    fill it so the historical message reads as ``done`` rather than ``still
-    going``.
+def test_freeze_phase_content_preserves_mid_phase_progress() -> None:
+    """Mid-phase 終了 should keep the bar at its actual elapsed position —
+    freezing must not artificially fill it to 100%.
     """
     msg = phase_content(_state(elapsed_seconds=300, has_started=True))
-    # Sanity: at 5/25 minutes the bar is partial (some filled, some empty).
-    assert PROGRESS_BAR_EMPTY in msg
     frozen = freeze_phase_content(msg)
-    assert PROGRESS_BAR_EMPTY not in frozen
-    assert PROGRESS_BAR_FILLED * PROGRESS_BAR_LENGTH in frozen
-    # Elapsed/total snap to total/total to match the filled bar.
-    assert "25分 / 25分" in frozen
+    # Both filled and empty cells remain — the partial bar is preserved.
+    assert PROGRESS_BAR_FILLED in frozen
+    assert PROGRESS_BAR_EMPTY in frozen
+    assert "5分 / 25分" in frozen
 
 
 # ---------------------------------------------------------------------------

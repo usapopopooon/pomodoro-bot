@@ -271,12 +271,16 @@ class RoomManager:
         # Strip buttons off the most recent phase message too so users
         # can't click stale controls, and freeze the live timestamp so
         # the message stops ticking "X 分前" after the room is done.
+        # Render fresh ``phase_content`` against the current state so the
+        # frozen bar reflects the *actual* elapsed at end-time — a
+        # mid-phase 終了 should preserve its mid-state, not pop back to
+        # whatever the last periodic-tick edit happened to write.
         if state.last_phase_message is not None:
-            from src.ui.embeds import freeze_phase_content
+            from src.ui.embeds import freeze_phase_content, phase_content
 
             with contextlib.suppress(discord.HTTPException):
                 await state.last_phase_message.edit(
-                    content=freeze_phase_content(state.last_phase_message.content),
+                    content=freeze_phase_content(phase_content(state)),
                     view=None,
                 )
 
