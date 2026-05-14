@@ -117,7 +117,10 @@ class PomodoroBot(commands.Bot):
             return
         guild = member.guild
         voice_client = guild.voice_client
-        if voice_client is None or not voice_client.is_connected():
+        if (
+            not isinstance(voice_client, discord.VoiceClient)
+            or not voice_client.is_connected()
+        ):
             return
         bot_channel = voice_client.channel
         if bot_channel is None:
