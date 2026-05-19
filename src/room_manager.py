@@ -284,6 +284,12 @@ class RoomManager:
                     view=None,
                 )
 
+        async with state.phase_ping_lock:
+            if state.last_phase_ping_message is not None:
+                with contextlib.suppress(discord.HTTPException):
+                    await state.last_phase_ping_message.delete()
+                state.last_phase_ping_message = None
+
         logger.info("room.ended room_id=%s reason=%s", room_id, reason)
         return state
 
@@ -895,31 +901,44 @@ class RoomManager:
         per-phase notifications opt-in, each phase boundary optionally
         posts this small one-liner — gated by the per-phase notify
         toggles on the Control Panel (work / short_break / long_break).
-        Mentions are spoiler-wrapped so the names stay hidden but the
-        ping still fires.
+        The previous ping is deleted first so only the current one remains
+        visible in channel history. Mentions are spoiler-wrapped so the
+        names stay hidden but the ping still fires.
         """
         from src.ui.embeds import phase_ping_content
 
         channel = state.message.channel if state.message is not None else None
         if channel is None:
             return
-        async with state.lock:
-            content = phase_ping_content(state)
-        if content is None:
-            return
-        try:
-            await channel.send(
-                content=content,
-                allowed_mentions=discord.AllowedMentions(
-                    users=True, everyone=False, roles=False
-                ),
-            )
-        except discord.HTTPException:
-            logger.warning(
-                "phase.ping failed room_id=%s phase=%s",
-                state.room_id,
-                state.phase,
-            )
+        async with state.phase_ping_lock:
+            async with state.lock:
+                content = phase_ping_content(state)
+                previous = state.last_phase_ping_message
+                state.last_phase_ping_message = None
+
+            if previous is not None:
+                with contextlib.suppress(discord.HTTPException):
+                    await previous.delete()
+
+            if content is None:
+                return
+            try:
+                msg = await channel.send(
+                    content=content,
+                    allowed_mentions=discord.AllowedMentions(
+                        users=True, everyone=False, roles=False
+                    ),
+                )
+            except discord.HTTPException:
+                logger.warning(
+                    "phase.ping failed room_id=%s phase=%s",
+                    state.room_id,
+                    state.phase,
+                )
+                return
+
+            async with state.lock:
+                state.last_phase_ping_message = msg
 
     async def _render_control_panel(self, state: RoomState) -> None:
         """Refresh the Control Panel message (participants, plan, status)."""

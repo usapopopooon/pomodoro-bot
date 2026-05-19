@@ -69,13 +69,15 @@ class RoomState:
     participants: dict[int, ParticipantState] = field(default_factory=dict)
 
     # ``message`` is the persistent Control Panel message.
-    # Phase-transition announcements live as separate channel messages —
-    # we keep only the most recent one around so we can strip its buttons
-    # when a new phase begins.
+    # ``last_phase_message`` is the single live progress post. Optional
+    # mention pings are separate short-lived posts; keeping the latest lets
+    # us delete it before posting the next one so channel history stays tidy.
     message: discord.Message | None = None
     last_phase_message: discord.Message | None = None
+    last_phase_ping_message: discord.Message | None = None
     task_handle: asyncio.Task[None] | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    phase_ping_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     wake_event: asyncio.Event = field(default_factory=asyncio.Event)
 
     # ------------------------------------------------------------------

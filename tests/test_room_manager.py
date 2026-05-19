@@ -67,6 +67,7 @@ def _fake_channel(channel_id: int = 555) -> SimpleNamespace:
         return SimpleNamespace(
             id=9999,
             edit=AsyncMock(),
+            delete=AsyncMock(),
             content=content if isinstance(content, str) else "",
         )
 
@@ -1162,6 +1163,54 @@ async def test_set_notify_owner_only_and_per_phase() -> None:
         assert state.notify_short_break is True
         assert state.notify_work is False
         assert state.notify_long_break is False
+    finally:
+        await manager.end(state.room_id, reason="test")
+
+
+@pytest.mark.asyncio
+async def test_phase_ping_replaces_previous_ping_message() -> None:
+    manager = _manager()
+    state, channel = await _spawn_room(manager, creator=1)
+    await manager.join(state.room_id, 1)
+    await manager.join(state.room_id, 2)
+    state.notify_work = True
+    state.notify_short_break = True
+    channel.send.reset_mock()
+    try:
+        await manager._post_phase_ping(state)
+        first_ping = state.last_phase_ping_message
+        assert first_ping is not None
+        assert channel.send.await_count == 1
+
+        state.phase = Phase.SHORT_BREAK
+        await manager._post_phase_ping(state)
+
+        first_ping.delete.assert_awaited_once()
+        assert channel.send.await_count == 2
+        assert state.last_phase_ping_message is not None
+        assert state.last_phase_ping_message is not first_ping
+    finally:
+        await manager.end(state.room_id, reason="test")
+
+
+@pytest.mark.asyncio
+async def test_phase_ping_deletes_previous_message_when_next_phase_notify_off() -> None:
+    manager = _manager()
+    state, channel = await _spawn_room(manager, creator=1)
+    await manager.join(state.room_id, 1)
+    state.notify_work = True
+    channel.send.reset_mock()
+    try:
+        await manager._post_phase_ping(state)
+        first_ping = state.last_phase_ping_message
+        assert first_ping is not None
+
+        state.phase = Phase.SHORT_BREAK
+        await manager._post_phase_ping(state)
+
+        first_ping.delete.assert_awaited_once()
+        assert channel.send.await_count == 1
+        assert state.last_phase_ping_message is None
     finally:
         await manager.end(state.room_id, reason="test")
 
