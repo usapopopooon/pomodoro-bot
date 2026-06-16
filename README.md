@@ -27,6 +27,8 @@ docker compose up --build
 
 開発中は `.env` に `DISCORD_GUILD_IDS=<サーバ ID>` を書くとコマンドが即時同期されます(グローバル同期は最大 1 時間)。
 
+Docker Compose は 1 サーバー運用向けに `db=128m` / `bot=256m` のメモリ上限を既定にしています。ボイス再生時などに落ちる場合は `.env` の `BOT_MEMORY_LIMIT` を `384m` や `512m` に上げてください。
+
 ### 3. Railway
 
 1. PostgreSQL プラグインを追加

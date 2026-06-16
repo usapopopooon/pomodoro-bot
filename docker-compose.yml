@@ -1,11 +1,11 @@
 services:
   db:
     image: postgres:17-alpine
-    mem_limit: 512m
+    mem_limit: ${DB_MEMORY_LIMIT:-128m}
     deploy:
       resources:
         limits:
-          memory: 512m
+          memory: ${DB_MEMORY_LIMIT:-128m}
     environment:
       POSTGRES_USER: pomodoro
       POSTGRES_PASSWORD: pomodoro
@@ -22,11 +22,11 @@ services:
 
   bot:
     build: .
-    mem_limit: 512m
+    mem_limit: ${BOT_MEMORY_LIMIT:-256m}
     deploy:
       resources:
         limits:
-          memory: 512m
+          memory: ${BOT_MEMORY_LIMIT:-256m}
     depends_on:
       db:
         condition: service_healthy
