@@ -44,12 +44,15 @@ def _install_signal_handlers() -> None:
         signal.signal(signal.SIGHUP, signal.SIG_IGN)
 
 
-async def _run_bot(token: str) -> None:
+async def _run_bot(token: str, index: int) -> None:
     """Run one bot end-to-end; ensure ``close()`` even on exceptions."""
     bot = PomodoroBot()
     _bots.append(bot)
     try:
         await bot.start(token)
+    except Exception:
+        logger.exception("bot instance %d crashed during startup/runtime", index)
+        raise
     finally:
         if not bot.is_closed():
             await bot.close()
@@ -67,10 +70,10 @@ async def _amain() -> None:
     tokens = settings.discord_tokens
     logger.info("starting %d bot instance(s)", len(tokens))
 
-    # Run every bot concurrently. ``return_exceptions`` so one bot's crash
-    # surfaces in the log without taking down the others — though in
-    # practice signal handlers will end the whole process anyway.
-    await asyncio.gather(*(_run_bot(t) for t in tokens), return_exceptions=True)
+    # Run every bot concurrently. If one instance exits unexpectedly, let the
+    # process fail so the platform shows the real traceback instead of a quiet
+    # restart loop.
+    await asyncio.gather(*(_run_bot(t, i) for i, t in enumerate(tokens, start=1)))
 
 
 def main() -> None:
