@@ -76,7 +76,10 @@ class Settings(BaseSettings):
         # Normalise both into ``self.discord_tokens`` so downstream code only
         # reads one place; ``self.discord_token`` keeps echoing the first.
         if not self.discord_tokens and self.discord_token.strip():
-            self.discord_tokens = [self.discord_token.strip()]
+            self.discord_tokens = [
+                s.strip() for s in self.discord_token.split(",") if s.strip()
+            ]
+            self.discord_token = self.discord_tokens[0]
         elif self.discord_tokens and not self.discord_token.strip():
             self.discord_token = self.discord_tokens[0]
         if not self.discord_tokens:

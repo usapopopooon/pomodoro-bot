@@ -7,6 +7,8 @@ import os
 import signal
 import sys
 
+from discord.errors import LoginFailure
+
 from src.bot import PomodoroBot
 from src.config import settings
 from src.database.engine import check_database_connection_with_retry
@@ -50,6 +52,15 @@ async def _run_bot(token: str, index: int) -> None:
     _bots.append(bot)
     try:
         await bot.start(token)
+    except LoginFailure:
+        logger.error(
+            "bot instance %d failed Discord login: DISCORD_TOKEN is invalid. "
+            "Set the raw Bot token from Discord Developer Portal; do not use "
+            "the application ID, public key, client secret, or a value prefixed "
+            "with 'Bot '.",
+            index,
+        )
+        raise
     except Exception:
         logger.exception("bot instance %d crashed during startup/runtime", index)
         raise

@@ -89,6 +89,14 @@ def test_single_discord_token_is_promoted_to_tokens_list(
     assert s.discord_token == "alpha"
 
 
+def test_discord_token_csv_is_tolerated(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DISCORD_TOKEN", "alpha,beta, gamma ")
+    monkeypatch.delenv("DISCORD_TOKENS", raising=False)
+    s = Settings()
+    assert s.discord_tokens == ["alpha", "beta", "gamma"]
+    assert s.discord_token == "alpha"
+
+
 def test_discord_tokens_csv_parses(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DISCORD_TOKEN", raising=False)
     monkeypatch.setenv("DISCORD_TOKENS", "alpha,beta, gamma ")
