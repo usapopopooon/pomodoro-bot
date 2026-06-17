@@ -61,9 +61,7 @@ async def test_auto_disconnect_when_other_bot_leaves_bot_only_channel(
     bot = _make_bot(monkeypatch)
 
     member = _member(222, 10, voice_client, is_bot=True)
-    await bot.on_voice_state_update(
-        member, _state(bot_channel), _state(None)
-    )
+    await bot.on_voice_state_update(member, _state(bot_channel), _state(None))
 
     bot.room_manager.end_voice_room_if_any.assert_awaited_once_with(
         10, reason="voice_empty"
@@ -84,9 +82,7 @@ async def test_auto_end_when_self_moved_into_bot_only_channel(
     bot.room_manager.end_voice_room_if_any.return_value = ended_state
 
     member = _member(999, 10, voice_client, is_bot=True)
-    await bot.on_voice_state_update(
-        member, _state(old_channel), _state(new_channel)
-    )
+    await bot.on_voice_state_update(member, _state(old_channel), _state(new_channel))
 
     bot.room_manager.end_voice_room_if_any.assert_awaited_once_with(
         10, reason="voice_empty"
@@ -104,9 +100,7 @@ async def test_initial_self_join_does_not_auto_disconnect(
     bot = _make_bot(monkeypatch)
 
     member = _member(999, 10, voice_client, is_bot=True)
-    await bot.on_voice_state_update(
-        member, _state(None), _state(bot_channel)
-    )
+    await bot.on_voice_state_update(member, _state(None), _state(bot_channel))
 
     bot.room_manager.end_voice_room_if_any.assert_not_awaited()
     bot.voice_manager.disconnect.assert_not_awaited()
