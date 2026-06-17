@@ -109,12 +109,10 @@ class PomodoroBot(commands.Bot):
 
         Without this, the timer keeps ticking and audio cues fire into an
         empty channel after the only human disconnects — wasted work and
-        a stranded bot. We watch for non-bot members leaving the channel
-        the bot is currently sitting in, and tear the room down as soon
-        as the human headcount hits zero.
+        a stranded bot. We watch for members leaving the channel the bot is
+        currently sitting in, plus self-move events, and tear the room down
+        as soon as the human headcount hits zero.
         """
-        if member.bot:
-            return
         guild = member.guild
         voice_client = guild.voice_client
         if (
@@ -125,15 +123,29 @@ class PomodoroBot(commands.Bot):
         bot_channel = voice_client.channel
         if bot_channel is None:
             return
-        # Only act when the member left (or was moved out of) the bot's VC.
+        bot_channel_id = bot_channel.id
+        # Only act when the member left (or was moved out of) the bot's VC,
+        # plus the special case where this bot was moved into a bot-only VC.
         # Mute/deafen toggles fire this event too but keep the same channel.
         was_in_bot_channel = (
-            before.channel is not None and before.channel.id == bot_channel.id
+            before.channel is not None and before.channel.id == bot_channel_id
         )
         still_in_bot_channel = (
-            after.channel is not None and after.channel.id == bot_channel.id
+            after.channel is not None and after.channel.id == bot_channel_id
         )
-        if not was_in_bot_channel or still_in_bot_channel:
+        is_self_event = self.user is not None and member.id == self.user.id
+        if is_self_event:
+            # Initial connect also emits our own voice-state event. Only use
+            # self-events for bot-only cleanup when Discord moved us from
+            # another VC into the current one.
+            moved_into_bot_channel = (
+                before.channel is not None
+                and still_in_bot_channel
+                and not was_in_bot_channel
+            )
+            if not moved_into_bot_channel:
+                return
+        elif not was_in_bot_channel or still_in_bot_channel:
             return
         if any(not m.bot for m in bot_channel.members):
             return
