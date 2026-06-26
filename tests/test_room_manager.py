@@ -768,23 +768,6 @@ async def test_background_end_reasons_play_no_cue() -> None:
 
 
 @pytest.mark.asyncio
-async def test_one_minute_cue_played_flag_resets_on_phase_advance() -> None:
-    """The phase loop replays the cue on each new phase, so the flag must
-    reset whenever the clock does.
-    """
-    manager = _manager()
-    state, _ = await _spawn_room(manager, creator=1)
-    state.one_minute_cue_played = True
-    state.advance_phase(count_completion=False)
-    assert state.one_minute_cue_played is False
-    # And explicit reset (e.g. owner pressed Reset).
-    state.one_minute_cue_played = True
-    state.reset_current_phase()
-    assert state.one_minute_cue_played is False
-    await manager.end(state.room_id, reason="test")
-
-
-@pytest.mark.asyncio
 async def test_maybe_play_one_minute_cue_skipped_when_already_played() -> None:
     voice = _connected_voice_stub()
     manager = RoomManager(

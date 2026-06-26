@@ -83,11 +83,25 @@ alembic/versions/…       # マイグレーション
 
 タイマー状態は memory 保持(再起動で `bot_restart` クローズ)、ルームは setup → running の 2 相、wake_event ベースの phase loop で 10 秒ティック無し。
 
-### 音声(VOICEVOX:ずんだもん)
+### 音声(VOICEVOX:小夜/SAYO)
 
-`voices/*.wav` を `🔊` 接続中のみ再生。同梱クリップ: `start` / `end` / `alarm` / `connected` / `start-task` / `start-break` / `end-break` / `start-long-break` / `end-long-break` / `pause` / `resume` / `one-minute-left`。フェーズ境界は WORK→休憩 が `alarm + start-X`、休憩→WORK が `alarm + end-X + start-task`。
+`voices/*.wav` を `🔊` 接続中のみ再生。同梱クリップ: `start` / `end` / `alarm` / `connected` / `start-task` / `start-break` / `end-break` / `start-long-break` / `end-long-break` / `pause` / `resume` / `five-minutes-left` / `one-minute-left`。フェーズ境界は WORK→休憩 が `alarm + start-X`、休憩→WORK が `alarm + end-X + start-task`。
 
-クレジット: [VOICEVOX](https://voicevox.hiroshiba.jp/) / [VOICEVOX:ずんだもん](https://zunko.jp/)。
+音声クリップは `voices/voices.json` を台本にして、VOICEVOX 小夜/SAYO(ノーマル)で生成します。
+
+```bash
+docker compose -f docker-compose.gen.yml up --build \
+  --abort-on-container-exit --exit-code-from gen
+```
+
+既存 wav を上書きするとき:
+
+```bash
+GEN_ARGS="--force" docker compose -f docker-compose.gen.yml up --build \
+  --abort-on-container-exit --exit-code-from gen
+```
+
+クレジット: [VOICEVOX](https://voicevox.hiroshiba.jp/) / VOICEVOX:小夜/SAYO。
 
 ---
 

@@ -1,0 +1,32 @@
+# One-shot WAV generation pipeline:
+#
+#   docker compose -f docker-compose.gen.yml up --build \
+#       --abort-on-container-exit --exit-code-from gen
+#
+# Brings up VOICEVOX, runs scripts/generate_voices.py against it, and drops
+# rendered .wav files into ./voices on the host. Re-running skips existing
+# files unless you pass GEN_ARGS=--force.
+
+services:
+  voicevox:
+    image: voicevox/voicevox_engine:cpu-latest
+
+  gen:
+    build:
+      context: .
+      dockerfile: Dockerfile.gen
+    depends_on:
+      - voicevox
+    environment:
+      VOICEVOX_URL: http://voicevox:50021
+    volumes:
+      - ./voices:/app/voices
+    entrypoint: []
+    command:
+      - sh
+      - -c
+      - >-
+        python scripts/generate_voices.py
+        --engine http://voicevox:50021
+        --wait-seconds 90
+        ${GEN_ARGS:-}

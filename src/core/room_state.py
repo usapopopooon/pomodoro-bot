@@ -45,10 +45,11 @@ class RoomState:
     paused_accumulated: timedelta = field(default_factory=timedelta)
     completed_work_phases: int = 0
 
-    # Set to True once the ``one-minute-left`` voice cue has fired for the
-    # current phase, so the phase loop doesn't replay it on every refresh
-    # tick that lands inside the final 60 seconds. Reset alongside the
-    # phase clock in :meth:`reset_current_phase`.
+    # Set to True once each countdown voice cue has fired for the current
+    # phase, so the phase loop doesn't replay it on every refresh tick that
+    # lands inside the countdown window. Reset alongside the phase clock in
+    # :meth:`reset_current_phase`.
+    five_minutes_cue_played: bool = False
     one_minute_cue_played: bool = False
 
     # ``has_started`` gates the phase loop. ``/pomo`` creates a room with
@@ -119,7 +120,8 @@ class RoomState:
         self.phase_started_at = datetime.now(UTC)
         self.paused_at = None
         self.paused_accumulated = timedelta()
-        # Re-arm the one-minute-left cue so the *new* clock period plays it.
+        # Re-arm countdown cues so the *new* clock period plays them.
+        self.five_minutes_cue_played = False
         self.one_minute_cue_played = False
 
     def advance_phase(self, *, count_completion: bool) -> Phase:

@@ -18,9 +18,10 @@ logger = logging.getLogger(__name__)
 
 
 # Voice-clip mappings — module-level so they're trivially overridable in
-# tests and don't pull state into the manager. ``one-minute-left`` /
-# ``alarm`` / ``pause`` / ``resume`` / ``connected`` are referenced directly
-# at the call sites since they don't depend on phase / reason. Natural
+# tests and don't pull state into the manager. ``five-minutes-left`` /
+# ``one-minute-left`` / ``alarm`` / ``pause`` / ``resume`` / ``connected``
+# are referenced directly at the call sites since they don't depend on
+# phase / reason. Natural
 # transitions chain alarm → ``_END_CLIP`` (if leaving a break) →
 # ``_START_CLIP[next_phase]``; the work phase only has an entry here so
 # the BREAK→WORK leg can announce "back to work" after end-X.
@@ -39,6 +40,8 @@ _END_CLIP: dict[Phase, str] = {
 _END_REASON_CUE: dict[str, str] = {
     "owner_ended": "end",
 }
+_FIVE_MINUTES_SECONDS = 5 * 60
+_ONE_MINUTE_SECONDS = 60
 
 
 def _voice_channel_at_capacity(channel: discord.VoiceChannel) -> bool:
@@ -669,6 +672,25 @@ class RoomManager:
             return
         await self._voice.play_clip(state.guild_id, clip)
 
+    async def _maybe_play_five_minutes_cue(self, state: RoomState) -> bool:
+        """Play ``five-minutes-left.wav`` once for phases longer than 5 minutes.
+
+        A phase whose total duration is 5 minutes or less should not announce
+        "5 minutes left" immediately after it starts. The cue also stays quiet
+        once the final minute window has begun, where ``one-minute-left`` is
+        the more useful prompt.
+        """
+        if state.five_minutes_cue_played:
+            return False
+        if state.phase_duration_seconds <= _FIVE_MINUTES_SECONDS:
+            return False
+        new_remaining = state.remaining().total_seconds()
+        if not (_ONE_MINUTE_SECONDS < new_remaining <= _FIVE_MINUTES_SECONDS):
+            return False
+        state.five_minutes_cue_played = True
+        await self._play_cue(state, "five-minutes-left")
+        return True
+
     async def _maybe_play_one_minute_cue(self, state: RoomState) -> bool:
         """Play ``one-minute-left.wav`` once if the phase is in its final 60s.
 
@@ -680,7 +702,7 @@ class RoomManager:
         if state.one_minute_cue_played:
             return False
         new_remaining = state.remaining().total_seconds()
-        if not (0 < new_remaining <= 60):
+        if not (0 < new_remaining <= _ONE_MINUTE_SECONDS):
             return False
         state.one_minute_cue_played = True
         await self._play_cue(state, "one-minute-left")
@@ -738,11 +760,12 @@ class RoomManager:
         """Drive the phase message: post at phase boundaries, refresh the
         progress bar every ``self._refresh_seconds`` until the phase ends.
 
-        The loop sleeps for ``min(remaining, refresh_seconds, until_60s)``
-        — the third bound exists so we wake exactly when one minute is
-        left and can play ``one-minute-left.wav`` once. Wake_event preempts
-        the sleep on pause / skip / reset / plan update; those user actions
-        own their own message refresh outside the loop.
+        The loop sleeps for the next of: phase end, progress refresh, or a
+        countdown cue threshold. Those threshold wake-ups let
+        ``five-minutes-left.wav`` and ``one-minute-left.wav`` land exactly
+        once. Wake_event preempts the sleep on pause / skip / reset / plan
+        update; those user actions own their own message refresh outside the
+        loop.
         """
         try:
             # Visual first: send the single live phase message and fire
@@ -767,18 +790,24 @@ class RoomManager:
                     continue
 
                 sleep_for = min(remaining, self._refresh_seconds)
-                # If we haven't yet played the one-minute-left cue and the
-                # 60-second mark is still in the future, schedule a wake-up
-                # right at it so the cue lands precisely.
-                if not state.one_minute_cue_played and remaining > 60:
-                    sleep_for = min(sleep_for, remaining - 60)
+                # If countdown cue thresholds are still in the future,
+                # schedule wake-ups right at them so the clips land precisely.
+                if (
+                    not state.five_minutes_cue_played
+                    and state.phase_duration_seconds > _FIVE_MINUTES_SECONDS
+                    and remaining > _FIVE_MINUTES_SECONDS
+                ):
+                    sleep_for = min(sleep_for, remaining - _FIVE_MINUTES_SECONDS)
+                if not state.one_minute_cue_played and remaining > _ONE_MINUTE_SECONDS:
+                    sleep_for = min(sleep_for, remaining - _ONE_MINUTE_SECONDS)
                 try:
                     await asyncio.wait_for(state.wake_event.wait(), timeout=sleep_for)
                     state.wake_event.clear()
                     # User action — the handler already refreshed or posted
                     # a new message. Loop and re-evaluate.
                 except TimeoutError:
-                    # Tick: maybe play the one-minute cue, then refresh bar.
+                    # Tick: maybe play countdown cues, then refresh bar.
+                    await self._maybe_play_five_minutes_cue(state)
                     await self._maybe_play_one_minute_cue(state)
                     await self._update_phase_message(state)
         except asyncio.CancelledError:
